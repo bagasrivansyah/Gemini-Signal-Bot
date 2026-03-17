@@ -16,25 +16,43 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 bot = telebot.TeleBot(TOKEN_TELEGRAM)
 client = Groq(api_key=GROQ_API_KEY)
 
-# RAM STORAGE
+# DAFTAR API BINANCE UNTUK REDUNDANCY
+BINANCE_URLS = [
+    "https://api1.binance.com", 
+    "https://api2.binance.com", 
+    "https://api3.binance.com", 
+    "https://data-api.binance.vision"
+]
+
+# RAM STORAGE (Antrean Sinyal & Laporan)
 active_signals = []
 daily_stats = {"total": 0, "tp_hit": 0, "sl_hit": 0}
+
+def call_binance_api(endpoint):
+    """Fungsi pembantu untuk mencoba berbagai URL Binance"""
+    for base_url in BINANCE_URLS:
+        try:
+            url = f"{base_url}{endpoint}"
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, (list, dict)):
+                    return data
+        except:
+            continue
+    return None
 
 def get_technical_data(symbol):
     """Mengambil data RSI 1h dari Binance"""
     try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
-        response = requests.get(url, timeout=10)
-        data = response.json()
-        if not isinstance(data, list): return {"rsi": 50, "price": 0}
+        data = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=1h&limit=100")
+        if not data: return {"rsi": 50, "price": 0}
         
         df = pd.DataFrame(data, columns=['ts', 'o', 'h', 'l', 'c', 'v', 'ct', 'qv', 'nt', 'tbv', 'tqv', 'i'])
         df['close'] = df['c'].astype(float)
         df['rsi'] = ta.rsi(df['close'], length=14)
-        
         return {"rsi": round(df['rsi'].iloc[-1], 2), "price": df['close'].iloc[-1]}
-    except Exception as e:
-        print(f"Error Tech Data {symbol}: {e}")
+    except:
         return {"rsi": 50, "price": 0}
 
 def get_ai_analysis(coin, condition):
@@ -60,11 +78,11 @@ def get_ai_analysis(coin, condition):
             response_format={ "type": "json_object" }
         )
         return json.loads(completion.choices[0].message.content)
-    except Exception as e:
-        print(f"Gagal mendapatkan analisa AI: {e}")
+    except:
         return None
 
 def send_signal_ui(sig_data):
+    """Tampilan Pesan Signal yang Cantik dengan Penjelasan AI"""
     if not sig_data: return
     symbol = sig_data['symbol']
     chart_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}PERP"
@@ -88,19 +106,15 @@ def send_signal_ui(sig_data):
         f"🔗 [LIHAT CHART DI TRADINGVIEW]({chart_url})\n"
         f"⚠️ *Gunakan Risk Management!*"
     )
-    try:
-        bot.send_message(CHAT_ID, msg, parse_mode="Markdown", disable_web_page_preview=False)
-    except Exception as e:
-        print(f"Gagal mengirim Telegram: {e}")
+    bot.send_message(CHAT_ID, msg, parse_mode="Markdown", disable_web_page_preview=False)
 
 def check_monitoring():
     global active_signals, daily_stats
     if not active_signals: return
 
     try:
-        response = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=10)
-        prices = response.json()
-        if not isinstance(prices, list): return
+        prices = call_binance_api("/api/v3/ticker/price")
+        if not prices: return
         
         price_map = {p['symbol']: float(p['price']) for p in prices}
 
@@ -110,14 +124,12 @@ def check_monitoring():
             
             is_long = sig['signal'].upper() == "LONG"
 
-            # Cek SL
             if (is_long and cp <= sig['sl']) or (not is_long and cp >= sig['sl']):
                 bot.send_message(CHAT_ID, f"❌ **{sig['symbol']} SL HIT!**\nSinyal ditutup.")
                 daily_stats["sl_hit"] += 1
                 active_signals.remove(sig)
                 continue
 
-            # Cek TP (1, 2, 3)
             for i in range(1, 4):
                 tp_key = f'tp{i}'
                 hit_key = f'hit_tp{i}'
@@ -134,17 +146,14 @@ def check_monitoring():
 
 def run_scanner():
     global daily_stats
-    print("Memindai Pasar...")
+    print("Scanning Market...")
     try:
-        res = requests.get("https://api.binance.com/api/v3/ticker/24hr", timeout=10).json()
-        if not isinstance(res, list): return
-
-        usdt_pairs = [c for c in res if c.get('symbol', '').endswith("USDT") and float(c.get('quoteVolume', 0)) > 2000000]
-        if not usdt_pairs: return
+        res = call_binance_api("/api/v3/ticker/24hr")
+        if not res: return
         
+        usdt_pairs = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 2000000]
         sorted_c = sorted(usdt_pairs, key=lambda x: float(x['priceChangePercent']))
         
-        # Ambil Top Pump & Top Dump
         targets = [sorted_c[0], sorted_c[-1]]
         for t in targets:
             cond = "PUMP" if float(t['priceChangePercent']) > 0 else "DUMP"
@@ -153,7 +162,7 @@ def run_scanner():
                 active_signals.append(sig)
                 send_signal_ui(sig)
                 daily_stats["total"] += 1
-                time.sleep(2)
+                time.sleep(5)
     except Exception as e:
         print(f"Scanner Error: {e}")
 
@@ -161,16 +170,11 @@ if __name__ == "__main__":
     print("Bot AI Futures Bagas Rivansyah Aktif!")
     last_scan = 0
     while True:
-        current_time = time.time()
-        
-        # Scan tiap 2 jam (7200 detik)
-        if current_time - last_scan > 7200:
+        if time.time() - last_scan > 7200:
             run_scanner()
-            last_scan = current_time
+            last_scan = time.time()
             
-        # Laporan Harian jam 12 Malam (Local Server Time)
-        if datetime.now().hour == 0 and datetime.now().minute == 0:
-            if daily_stats["total"] > 0:
+            if datetime.now().hour == 0:
                 report = (f"📊 **DAILY REPORT**\n"
                          f"━━━━━━━━━━━━━━━━━━━━\n"
                          f"Sinyal Hari Ini: {daily_stats['total']}\n"
@@ -179,7 +183,6 @@ if __name__ == "__main__":
                          f"━━━━━━━━━━━━━━━━━━━━")
                 bot.send_message(CHAT_ID, report, parse_mode="Markdown")
                 daily_stats = {"total": 0, "tp_hit": 0, "sl_hit": 0}
-                time.sleep(60) # Hindari double report
 
         check_monitoring()
-        time.sleep(30) # Monitoring tiap 30 detik
+        time.sleep(30)
