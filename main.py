@@ -153,7 +153,7 @@ def run_scanner():
         if not res: return
         
         # Volume > 1.000.000 USDT agar lebih responsif
-        usdt_pairs = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 1000000]
+        usdt_pairs = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 500000]
         sorted_c = sorted(usdt_pairs, key=lambda x: float(x['priceChangePercent']))
         
         targets = [sorted_c[0], sorted_c[-1]]
