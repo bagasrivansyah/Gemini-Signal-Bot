@@ -7,6 +7,7 @@ from groq import Groq
 import time
 import json
 from datetime import datetime
+import threading
 
 # === CONFIGURATION (Railway Variables) ===
 TOKEN_TELEGRAM = os.getenv("TELEGRAM_TOKEN")
@@ -49,7 +50,7 @@ def get_technical_data(symbol):
         if not data: return {"rsi": 50, "price": 0}
         
         df = pd.DataFrame(data, columns=['ts', 'o', 'h', 'l', 'c', 'v', 'ct', 'qv', 'nt', 'tbv', 'tqv', 'i'])
-        df['close'] = df['c'].astype(float)
+        df['close'] = df['close'] = df['c'].astype(float)
         df['rsi'] = ta.rsi(df['close'], length=14)
         return {"rsi": round(df['rsi'].iloc[-1], 2), "price": df['close'].iloc[-1]}
     except:
@@ -151,7 +152,7 @@ def run_scanner():
         res = call_binance_api("/api/v3/ticker/24hr")
         if not res: return
         
-        # PENYESUAIAN: Volume diturunkan ke 1.000.000 agar lebih responsif
+        # Volume > 1.000.000 USDT agar lebih responsif
         usdt_pairs = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 1000000]
         sorted_c = sorted(usdt_pairs, key=lambda x: float(x['priceChangePercent']))
         
@@ -167,11 +168,38 @@ def run_scanner():
     except Exception as e:
         print(f"Scanner Error: {e}")
 
+# Fungsi Keyboard Menu (Opsional jika ingin digunakan)
+def main_keyboard():
+    markup = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    btn_scan = telebot.types.KeyboardButton('🔍 Scan Market Sekarang')
+    btn_status = telebot.types.KeyboardButton('📊 Status Bot')
+    markup.add(btn_scan, btn_status)
+    return markup
+
+@bot.message_handler(func=lambda message: message.text == '🔍 Scan Market Sekarang')
+def manual_scan(message):
+    bot.send_message(CHAT_ID, "🚀 Memulai pemindaian manual...")
+    run_scanner()
+
+@bot.message_handler(func=lambda message: message.text == '📊 Status Bot')
+def bot_status(message):
+    msg = (f"🤖 **Status Bot:** Aktif\n"
+           f"📈 Sinyal Aktif: {len(active_signals)}\n"
+           f"💰 Volume Filter: > 1,000,000 USDT")
+    bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
+
 if __name__ == "__main__":
-    # PENYESUAIAN: Notifikasi saat bot berhasil dideploy/online
-    bot.send_message(CHAT_ID, "🚀 **Bot AI Bagas Rivansyah Berhasil Online!**\nSedang mencari sinyal pertama...")
+    # Notifikasi start
+    try:
+        bot.send_message(CHAT_ID, "🚀 **Bot AI Bagas Rivansyah Berhasil Online!**\nSedang mencari sinyal pertama...", reply_markup=main_keyboard())
+    except:
+        print("Gagal kirim notifikasi Telegram awal.")
+        
     print("Bot AI Futures Bagas Rivansyah Aktif!")
     
+    # Jalankan Telegram Polling di thread terpisah agar tidak mengganggu loop scanner
+    threading.Thread(target=bot.infinity_polling).start()
+
     last_scan = 0
     while True:
         if time.time() - last_scan > 7200:
