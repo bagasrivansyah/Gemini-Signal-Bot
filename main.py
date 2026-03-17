@@ -151,7 +151,8 @@ def run_scanner():
         res = call_binance_api("/api/v3/ticker/24hr")
         if not res: return
         
-        usdt_pairs = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 2000000]
+        # PENYESUAIAN: Volume diturunkan ke 1.000.000 agar lebih responsif
+        usdt_pairs = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 1000000]
         sorted_c = sorted(usdt_pairs, key=lambda x: float(x['priceChangePercent']))
         
         targets = [sorted_c[0], sorted_c[-1]]
@@ -167,7 +168,10 @@ def run_scanner():
         print(f"Scanner Error: {e}")
 
 if __name__ == "__main__":
+    # PENYESUAIAN: Notifikasi saat bot berhasil dideploy/online
+    bot.send_message(CHAT_ID, "🚀 **Bot AI Bagas Rivansyah Berhasil Online!**\nSedang mencari sinyal pertama...")
     print("Bot AI Futures Bagas Rivansyah Aktif!")
+    
     last_scan = 0
     while True:
         if time.time() - last_scan > 7200:
