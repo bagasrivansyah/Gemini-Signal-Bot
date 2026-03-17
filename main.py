@@ -30,7 +30,6 @@ active_signals = []
 daily_stats = {"total": 0, "tp_hit": 0, "sl_hit": 0}
 
 def call_binance_api(endpoint):
-    """Fungsi pembantu untuk mencoba berbagai URL Binance"""
     for base_url in BINANCE_URLS:
         try:
             url = f"{base_url}{endpoint}"
@@ -44,13 +43,12 @@ def call_binance_api(endpoint):
     return None
 
 def get_technical_data(symbol):
-    """Mengambil data RSI 1h dari Binance"""
     try:
         data = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=1h&limit=100")
         if not data: return {"rsi": 50, "price": 0}
         
         df = pd.DataFrame(data, columns=['ts', 'o', 'h', 'l', 'c', 'v', 'ct', 'qv', 'nt', 'tbv', 'tqv', 'i'])
-        df['close'] = df['close'] = df['c'].astype(float)
+        df['close'] = df['c'].astype(float)
         df['rsi'] = ta.rsi(df['close'], length=14)
         return {"rsi": round(df['rsi'].iloc[-1], 2), "price": df['close'].iloc[-1]}
     except:
@@ -60,16 +58,18 @@ def get_ai_analysis(coin, condition):
     tech = get_technical_data(coin['symbol'])
     if tech['price'] == 0: return None
     
+    # PROMPT DILONGGARKAN: AI diminta lebih agresif mencari peluang di trend kecil
     prompt = f"""
     COIN: {coin['symbol']} | PRICE: {tech['price']} | RSI: {tech['rsi']} | 24h Change: {coin['priceChangePercent']}%
     CONDITION: {condition} | LEVERAGE: 20x
     
-    Tugas: Analisa Teknikal & berikan Sinyal Futures. 
-    Berikan penjelasan singkat (maks 20 kata) kenapa memilih signal tersebut berdasarkan RSI dan harga.
+    Tugas: Berikan sinyal scalping Futures meskipun trend kecil. 
+    Jika RSI > 50 dan harga naik, pertimbangkan LONG. Jika RSI < 50 dan harga turun, pertimbangkan SHORT.
+    Berikan alasan singkat yang meyakinkan.
     Hitung TP1 (ROI 20%), TP2 (ROI 40%), TP3 (ROI 100%) dan SL (ROI -50%) berdasarkan Leverage 20x.
     
-    Berikan output WAJIB JSON:
-    {{"symbol": "{coin['symbol']}", "signal": "LONG/SHORT", "entry": {tech['price']}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "rsi": {tech['rsi']}, "reason": "Tulis penjelasan AI di sini"}}
+    OUTPUT WAJIB JSON:
+    {{"symbol": "{coin['symbol']}", "signal": "LONG/SHORT", "entry": {tech['price']}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "rsi": {tech['rsi']}, "reason": "Alasan singkat"}}
     """
     
     try:
@@ -83,7 +83,6 @@ def get_ai_analysis(coin, condition):
         return None
 
 def send_signal_ui(sig_data):
-    """Tampilan Pesan Signal yang Cantik dengan Penjelasan AI"""
     if not sig_data: return
     symbol = sig_data['symbol']
     chart_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}PERP"
@@ -126,7 +125,7 @@ def check_monitoring():
             is_long = sig['signal'].upper() == "LONG"
 
             if (is_long and cp <= sig['sl']) or (not is_long and cp >= sig['sl']):
-                bot.send_message(CHAT_ID, f"❌ **{sig['symbol']} SL HIT!**\nSinyal ditutup.")
+                bot.send_message(CHAT_ID, f"❌ **{sig['symbol']} SL HIT!**")
                 daily_stats["sl_hit"] += 1
                 active_signals.remove(sig)
                 continue
@@ -150,13 +149,18 @@ def run_scanner():
     print("Scanning Market...")
     try:
         res = call_binance_api("/api/v3/ticker/24hr")
-        if not res: return
+        if not res: 
+            bot.send_message(CHAT_ID, "❌ Gagal mengambil data Binance.")
+            return
         
-        # Volume > 1.000.000 USDT agar lebih responsif
+        # Volume dilonggarkan ke 500k dan kriteria koin diperbanyak
         usdt_pairs = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 500000]
         sorted_c = sorted(usdt_pairs, key=lambda x: float(x['priceChangePercent']))
         
-        targets = [sorted_c[0], sorted_c[-1]]
+        # Ambil 3 koin teratas dan 3 koin terbawah agar peluang sinyal lebih banyak
+        targets = sorted_c[:3] + sorted_c[-3:]
+        
+        found_any = False
         for t in targets:
             cond = "PUMP" if float(t['priceChangePercent']) > 0 else "DUMP"
             sig = get_ai_analysis(t, cond)
@@ -164,11 +168,15 @@ def run_scanner():
                 active_signals.append(sig)
                 send_signal_ui(sig)
                 daily_stats["total"] += 1
-                time.sleep(5)
+                found_any = True
+                time.sleep(2)
+        
+        if not found_any:
+            bot.send_message(CHAT_ID, "🔍 Scan selesai: Belum ada setup yang pas di volume > 500k.")
+            
     except Exception as e:
         print(f"Scanner Error: {e}")
 
-# Fungsi Keyboard Menu (Opsional jika ingin digunakan)
 def main_keyboard():
     markup = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     btn_scan = telebot.types.KeyboardButton('🔍 Scan Market Sekarang')
@@ -185,36 +193,23 @@ def manual_scan(message):
 def bot_status(message):
     msg = (f"🤖 **Status Bot:** Aktif\n"
            f"📈 Sinyal Aktif: {len(active_signals)}\n"
-           f"💰 Volume Filter: > 1,000,000 USDT")
+           f"💰 Volume Filter: > 500,000 USDT")
     bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
 
 if __name__ == "__main__":
-    # Notifikasi start
     try:
-        bot.send_message(CHAT_ID, "🚀 **Bot AI Bagas Rivansyah Berhasil Online!**\nSedang mencari sinyal pertama...", reply_markup=main_keyboard())
+        bot.send_message(CHAT_ID, "🚀 **Bot AI Bagas Rivansyah Online!**\nVolume dilonggarkan ke 500k.", reply_markup=main_keyboard())
     except:
-        print("Gagal kirim notifikasi Telegram awal.")
+        pass
         
-    print("Bot AI Futures Bagas Rivansyah Aktif!")
-    
-    # Jalankan Telegram Polling di thread terpisah agar tidak mengganggu loop scanner
     threading.Thread(target=bot.infinity_polling).start()
 
     last_scan = 0
     while True:
-        if time.time() - last_scan > 7200:
+        # Scan otomatis dipercepat ke setiap 1 jam (3600 detik)
+        if time.time() - last_scan > 3600:
             run_scanner()
             last_scan = time.time()
-            
-            if datetime.now().hour == 0:
-                report = (f"📊 **DAILY REPORT**\n"
-                         f"━━━━━━━━━━━━━━━━━━━━\n"
-                         f"Sinyal Hari Ini: {daily_stats['total']}\n"
-                         f"TP Hit: {daily_stats['tp_hit']}\n"
-                         f"SL Hit: {daily_stats['sl_hit']}\n"
-                         f"━━━━━━━━━━━━━━━━━━━━")
-                bot.send_message(CHAT_ID, report, parse_mode="Markdown")
-                daily_stats = {"total": 0, "tp_hit": 0, "sl_hit": 0}
-
+        
         check_monitoring()
         time.sleep(30)
