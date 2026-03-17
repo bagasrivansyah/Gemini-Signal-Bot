@@ -1,5 +1,5 @@
-groq
 pyTelegramBotAPI
 requests
 pandas
 pandas_ta
+groq
