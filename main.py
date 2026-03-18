@@ -18,7 +18,7 @@ CHAT_ID = os.getenv("CHAT_ID") or os.getenv("ID_CHAT_TELEGRAM")
 
 # --- INISIALISASI CLIENT GEMINI 2.0 ---
 try:
-    # Menggunakan Gemini 2.0 Flash (Terbaru & Tercepat)
+    # Tetap menggunakan Gemini 2.0 Flash (Tercepat & Terbaru)
     client = genai.Client(api_key=GEMINI_API_KEY)
     MODEL_NAME = "gemini-2.0-flash" 
     print(f"✅ Gemini AI System Connected ({MODEL_NAME}).")
@@ -59,13 +59,12 @@ def get_ict_technical(symbol):
         return None
     except: return None
 
-# --- AI ANALYSIS (FIXED & STABLE) ---
+# --- AI ANALYSIS (STABIL UNTUK MODEL 2.0) ---
 def get_ai_analysis(coin_data):
     symbol = coin_data['symbol']
     ict = get_ict_technical(symbol)
     price = coin_data.get('lastPrice') or coin_data.get('price')
     
-    # Prompt lebih ketat agar output selalu valid JSON
     prompt = f"""
     Role: Expert ICT SMC Crypto Trader.
     Analyze: {symbol} current price {price}.
@@ -74,32 +73,32 @@ def get_ai_analysis(coin_data):
     Task: Give a trading signal. 
     Return ONLY a raw JSON object with this exact keys:
     {{"symbol": "{symbol}", "signal": "LONG", "entry": {price}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "reason": "Short expert logic"}}
-    Note: Signal must be "LONG", "SHORT", or "WAIT". No markdown tags.
+    Note: Signal must be "LONG", "SHORT", or "WAIT".
     """
 
     try:
-        # Menggunakan Model Terbaru Gemini 2.0 Flash
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.7,
-                response_mime_type="application/json" # Memaksa output JSON
+                response_mime_type="application/json"
             )
         )
         
         if response.text:
-            # Pembersihan tambahan jika AI masih memberikan markdown
             clean_json = response.text.strip()
-            if "```json" in clean_json:
-                clean_json = re.search(r'```json\n(.*?)\n```', clean_json, re.DOTALL).group(1)
-            elif "```" in clean_json:
-                clean_json = clean_json.replace("```", "")
-                
+            # Pembersihan tambahan jika output bukan JSON murni
+            if "```" in clean_json:
+                clean_json = re.sub(r'```json\n|```', '', clean_json)
             return json.loads(clean_json)
             
     except Exception as e:
-        print(f"❌ Error Analysis {symbol}: {e}")
+        # Jika terkena Rate Limit (429), cetak peringatan singkat
+        if "429" in str(e):
+            print(f"⚠️ Limit tercapai pada {symbol}, melewati koin ini...")
+        else:
+            print(f"❌ Error Analysis {symbol}: {e}")
         return None
 
 def send_signal_ui(sig_data):
@@ -124,22 +123,25 @@ def send_signal_ui(sig_data):
     bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
 
 def run_scanner():
-    print(f"🔍 Memulai Scan Market: {datetime.now().strftime('%H:%M:%S')}")
+    print(f"🔍 Scan Market: {datetime.now().strftime('%H:%M:%S')}")
     res = call_binance_api("/api/v3/ticker/24hr")
     if not res: return
     
-    # Filter koin dengan volume tinggi (> 10jt USDT untuk keamanan)
-    targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 10000000]
-    # Ambil 10 koin teratas berdasarkan volume
-    targets = sorted(targets, key=lambda x: float(x['quoteVolume']), reverse=True)[:10]
+    # Filter Volume > 15jt USDT untuk kualitas sinyal lebih baik
+    targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 15000000]
+    # Ambil 7 koin saja per scan agar tidak membebani kuota API gratis
+    targets = sorted(targets, key=lambda x: float(x['quoteVolume']), reverse=True)[:7]
     
     for t in targets:
         try:
             sig = get_ai_analysis(t)
             if sig:
                 send_signal_ui(sig)
-            time.sleep(2) # Jeda singkat agar tidak kena rate limit API
-        except:
+            
+            # JEDA KRUSIAL (12 DETIK): Untuk menghindari error 429 Resource Exhausted
+            time.sleep(12) 
+        except Exception as e:
+            time.sleep(5)
             continue
 
 @bot.message_handler(commands=['cek'])
@@ -152,7 +154,7 @@ def manual_check(message):
             
         sym = parts[1].upper()
         sym = f"{sym}USDT" if not sym.endswith("USDT") else sym
-        bot.send_message(CHAT_ID, f"🔄 Sedang menganalisis {sym}...")
+        bot.send_message(CHAT_ID, f"🔄 Menganalisis {sym} via Gemini 2.0...")
         
         res = call_binance_api(f"/api/v3/ticker/24hr?symbol={sym}")
         if res:
@@ -160,21 +162,19 @@ def manual_check(message):
             if sig: send_signal_ui(sig)
             else: bot.send_message(CHAT_ID, "⚠️ AI tidak melihat peluang saat ini.")
         else:
-            bot.send_message(CHAT_ID, "❌ Koin tidak ditemukan di Binance.")
+            bot.send_message(CHAT_ID, "❌ Koin tidak ditemukan.")
     except Exception as e:
         bot.send_message(CHAT_ID, f"❌ Error: {e}")
 
 if __name__ == "__main__":
     try:
-        bot.send_message(CHAT_ID, "🏛️ **SMC System Online (Gemini 2.0 Flash)**\nDev: Bagas Rivansyah")
+        bot.send_message(CHAT_ID, "🏛️ **SMC System Online (Gemini 2.0 Flash)**\nMode: Safe Scan Enabled")
         print("✅ Bot Ready.")
     except: pass
     
-    # Menjalankan Polling Telegram di Thread terpisah
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
     
-    # Loop Scanner Utama
     while True:
         run_scanner()
-        print("💤 Scan selesai. Menunggu 30 menit...")
-        time.sleep(1800) # Scan ulang setiap 30 menit
+        print("💤 Scan selesai. Istirahat 30 menit...")
+        time.sleep(1800)
