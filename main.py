@@ -20,7 +20,7 @@ CHAT_ID = os.getenv("CHAT_ID") or os.getenv("ID_CHAT_TELEGRAM")
 try:
     # Tetap menggunakan Gemini 2.0 Flash (Tercepat & Terbaru)
     client = genai.Client(api_key=GEMINI_API_KEY)
-    MODEL_NAME = "gemini-2.0-flash" 
+    MODEL_NAME = "gemini-1.5-flash" 
     print(f"✅ Gemini AI System Connected ({MODEL_NAME}).")
 except Exception as e:
     print(f"❌ Gagal Inisialisasi AI: {e}")
