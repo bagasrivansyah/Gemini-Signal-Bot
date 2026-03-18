@@ -42,33 +42,54 @@ def call_binance_api(endpoint):
 
 def get_technical_data(symbol):
     try:
-        data = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=1h&limit=100")
-        if not data: return {"rsi": 50, "price": 0}
+        # Mengambil data 1 jam untuk melihat tren (EMA & Volume)
+        data = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=1h&limit=50")
+        if not data: return {"trend": "neutral", "price": 0, "vol_spike": "1x"}
         
         df = pd.DataFrame(data, columns=['ts', 'o', 'h', 'l', 'c', 'v', 'ct', 'qv', 'nt', 'tbv', 'tqv', 'i'])
-        df['close'] = df['c'].astype(float)
-        df['rsi'] = ta.rsi(df['close'], length=14)
-        return {"rsi": round(df['rsi'].iloc[-1], 2), "price": df['close'].iloc[-1]}
+        df['close'] = df['close_price'] = df['c'].astype(float)
+        df['vol'] = df['v'].astype(float)
+        
+        # PERUBAHAN TEKNIKAL: Menggunakan EMA 9 & 21
+        df['ema_fast'] = ta.ema(df['close'], length=9)
+        df['ema_slow'] = ta.ema(df['close'], length=21)
+        
+        current_price = df['close'].iloc[-1]
+        
+        # Deteksi Volume Spike (Volume saat ini vs rata-rata 20 jam)
+        avg_vol = df['vol'].iloc[-21:-1].mean()
+        current_vol = df['vol'].iloc[-1]
+        vol_ratio = round(current_vol / avg_vol, 2)
+        
+        # Logika Trend
+        is_bullish = df['ema_fast'].iloc[-1] > df['ema_slow'].iloc[-1]
+        trend_status = "UP" if is_bullish else "DOWN"
+        
+        return {
+            "trend": trend_status, 
+            "price": current_price, 
+            "vol_spike": f"{vol_ratio}x"
+        }
     except:
-        return {"rsi": 50, "price": 0}
+        return {"trend": "neutral", "price": 0, "vol_spike": "1x"}
 
 def get_ai_analysis(coin, condition):
     tech = get_technical_data(coin['symbol'])
     if tech['price'] == 0: return None
     
-    # OPTIMASI PROMPT: Memaksa AI memberikan keputusan (Expert Mode)
+    # PROMPT: Fokus murni pada Momentum & EMA Trend
     prompt = f"""
-    BERTINDAKLAH SEBAGAI TRADER FUTURES AGRESIF.
-    PAIR: {coin['symbol']} | PRICE: {tech['price']} | RSI: {tech['rsi']} | 24h: {coin['priceChangePercent']}%
-    LEVERAGE: 20x
+    BERTINDAKLAH SEBAGAI TRADER MOMENTUM.
+    PAIR: {coin['symbol']} | PRICE: {tech['price']} | TREND: {tech['trend']} | VOL SPIKE: {tech['vol_spike']}
+    24h Change: {coin['priceChangePercent']}% | LEVERAGE: 20x
     
-    Tugas: Wajib berikan sinyal LONG atau SHORT. Cari peluang scalping terkecil.
-    - Jika RSI < 50: Prioritas LONG (target rebound).
-    - Jika RSI >= 50: Prioritas SHORT (target koreksi).
+    Tugas: Wajib berikan sinyal LONG atau SHORT.
+    - Jika TREND UP dan VOL SPIKE > 1.1x: Prioritas LONG.
+    - Jika TREND DOWN dan VOL SPIKE > 1.1x: Prioritas SHORT.
     Hitung TP1 (ROI 20%), TP2 (ROI 50%), TP3 (ROI 100%) dan SL (ROI -50%) secara presisi.
     
     OUTPUT WAJIB JSON:
-    {{"symbol": "{coin['symbol']}", "signal": "LONG/SHORT", "entry": {tech['price']}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "rsi": {tech['rsi']}, "reason": "Analisa singkat"}}
+    {{"symbol": "{coin['symbol']}", "signal": "LONG/SHORT", "entry": {tech['price']}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "data_info": "{tech['vol_spike']}", "reason": "Momentum Technical"}}
     """
     
     try:
@@ -87,12 +108,13 @@ def send_signal_ui(sig_data):
     symbol = sig_data['symbol']
     chart_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}PERP"
     
+    # Tetap menggunakan format visual Bagas Rivansyah
     msg = (
         f"🔥 **NEW FUTURES SIGNAL** 🔥\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🪙 **Pair:** #{symbol}\n"
         f"📈 **Type:** {sig_data['signal']} | 20x (Cross)\n"
-        f"📊 **RSI:** {sig_data['rsi']}\n"
+        f"📊 **Vol Spike:** {sig_data.get('data_info', 'N/A')}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 **Entry:** {sig_data['entry']}\n\n"
         f"✅ **Target Profit:**\n"
@@ -141,11 +163,10 @@ def run_scanner():
         res = call_binance_api("/api/v3/ticker/24hr")
         if not res: return
         
-        # OPTIMASI: Volume diturunkan ke 100k agar koin yang sedang bergejolak terdeteksi
         usdt_pairs = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 100000]
         sorted_c = sorted(usdt_pairs, key=lambda x: abs(float(x['priceChangePercent'])), reverse=True)
         
-        targets = sorted_c[:20] # Ambil 20 koin paling volatil
+        targets = sorted_c[:20]
         
         found_any = False
         for t in targets:
@@ -169,7 +190,7 @@ def main_keyboard():
 
 @bot.message_handler(func=lambda message: message.text == '🔍 Scan Market Sekarang')
 def manual_scan(message):
-    bot.send_message(CHAT_ID, "🚀 Memulai pemindaian agresif (Target 20 koin)...")
+    bot.send_message(CHAT_ID, "🚀 Memulai pemindaian teknikal (Target 20 koin)...")
     run_scanner()
 
 @bot.message_handler(func=lambda message: message.text == '📊 Status Bot')
@@ -177,12 +198,12 @@ def bot_status(message):
     msg = (f"🤖 **Status Bot:** Aktif\n"
            f"📈 Sinyal Aktif: {len(active_signals)}\n"
            f"💰 Volume Filter: > 100,000 USDT\n"
-           f"🎯 Target Scan: 20 Koin Volatilitas Tertinggi")
+           f"🎯 Strategi: EMA Cross & Volume Spike")
     bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
 
 if __name__ == "__main__":
     try:
-        bot.send_message(CHAT_ID, f"🚀 **Bot AI Bagas Rivansyah Online!**\nSistem monitoring & scan otomatis aktif.", reply_markup=main_keyboard())
+        bot.send_message(CHAT_ID, f"🚀 **Bot AI Bagas Rivansyah Online!**\nSistem monitoring teknikal aktif.", reply_markup=main_keyboard())
     except: pass
     
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
