@@ -12,18 +12,31 @@ import threading
 import re
 
 # === CONFIGURATION ===
-TOKEN_TELEGRAM = os.getenv("TOKEN_TELEGRAM") or os.getenv("TOKEN_TELEGRAM")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("KUNCI_API_GEMINI")
+TOKEN_TELEGRAM = os.getenv("TOKEN_TELEGRAM")
+# Masukkan kunci dipisah koma di Railway, contoh: kunci1,kunci2,kunci3
+RAW_KEYS = os.getenv("GEMINI_API_KEY") or os.getenv("KUNCI_API_GEMINI")
 CHAT_ID = os.getenv("CHAT_ID") or os.getenv("ID_CHAT_TELEGRAM")
 
-# --- INISIALISASI CLIENT GEMINI 2.0 ---
-try:
-    # Tetap menggunakan Gemini 2.0 Flash (Tercepat & Terbaru)
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    MODEL_NAME = "gemini-1.5-flash" 
-    print(f"✅ Gemini AI System Connected ({MODEL_NAME}).")
-except Exception as e:
-    print(f"❌ Gagal Inisialisasi AI: {e}")
+# Parsing Multiple Keys
+ALL_KEYS = [k.strip() for k in RAW_KEYS.split(",")] if RAW_KEYS else []
+current_key_index = 0
+
+def get_client():
+    """Mengambil client Gemini berdasarkan index rotasi saat ini"""
+    global current_key_index
+    if not ALL_KEYS:
+        return None
+    key = ALL_KEYS[current_key_index]
+    return genai.Client(api_key=key)
+
+def switch_key():
+    """Berpindah ke API Key berikutnya jika terkena limit"""
+    global current_key_index
+    current_key_index = (current_key_index + 1) % len(ALL_KEYS)
+    print(f"🔄 Berpindah ke API Key index: {current_key_index}")
+
+# Model yang digunakan
+MODEL_NAME = "gemini-2.0-flash"
 
 bot = telebot.TeleBot(TOKEN_TELEGRAM)
 
@@ -59,24 +72,31 @@ def get_ict_technical(symbol):
         return None
     except: return None
 
-# --- AI ANALYSIS (STABIL UNTUK MODEL 2.0) ---
-def get_ai_analysis(coin_data):
+# --- AI ANALYSIS DENGAN AUTO-ROTATION ---
+def get_ai_analysis(coin_data, retry_count=0):
+    if retry_count >= len(ALL_KEYS):
+        print("❌ Semua API Key sudah mencapai limit harian.")
+        return None
+
     symbol = coin_data['symbol']
     ict = get_ict_technical(symbol)
     price = coin_data.get('lastPrice') or coin_data.get('price')
     
     prompt = f"""
-    Role: Expert ICT SMC Crypto Trader.
-    Analyze: {symbol} current price {price}.
-    Technical Bias: {ict['side'] if ict else 'Neutral'}, Reason: {ict['reason'] if ict else 'Price Action Market Structure'}.
-    
-    Task: Give a trading signal. 
-    Return ONLY a raw JSON object with this exact keys:
-    {{"symbol": "{symbol}", "signal": "LONG", "entry": {price}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "reason": "Short expert logic"}}
-    Note: Signal must be "LONG", "SHORT", or "WAIT".
+    Role: Expert ICT SMC Crypto Trader. Pair: {symbol} at {price}.
+    Technical Bias: {ict['side'] if ict else 'Neutral'}.
+    Task: Give trading signal in RAW JSON ONLY.
+    {{
+        "symbol": "{symbol}",
+        "signal": "LONG/SHORT/WAIT",
+        "entry": {price},
+        "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0,
+        "reason": "Expert analysis"
+    }}
     """
 
     try:
+        client = get_client()
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=prompt,
@@ -88,17 +108,18 @@ def get_ai_analysis(coin_data):
         
         if response.text:
             clean_json = response.text.strip()
-            # Pembersihan tambahan jika output bukan JSON murni
             if "```" in clean_json:
                 clean_json = re.sub(r'```json\n|```', '', clean_json)
             return json.loads(clean_json)
             
     except Exception as e:
-        # Jika terkena Rate Limit (429), cetak peringatan singkat
         if "429" in str(e):
-            print(f"⚠️ Limit tercapai pada {symbol}, melewati koin ini...")
+            print(f"⚠️ Key index {current_key_index} Limit! Mencoba key lain...")
+            switch_key()
+            time.sleep(2)
+            return get_ai_analysis(coin_data, retry_count + 1) # Retry dengan key baru
         else:
-            print(f"❌ Error Analysis {symbol}: {e}")
+            print(f"❌ Error AI {symbol}: {e}")
         return None
 
 def send_signal_ui(sig_data):
@@ -127,9 +148,8 @@ def run_scanner():
     res = call_binance_api("/api/v3/ticker/24hr")
     if not res: return
     
-    # Filter Volume > 15jt USDT untuk kualitas sinyal lebih baik
-    targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 15000000]
-    # Ambil 7 koin saja per scan agar tidak membebani kuota API gratis
+    # Filter Volume > 5.000.000 USDT sesuai permintaan
+    targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 5000000]
     targets = sorted(targets, key=lambda x: float(x['quoteVolume']), reverse=True)[:7]
     
     for t in targets:
@@ -137,11 +157,8 @@ def run_scanner():
             sig = get_ai_analysis(t)
             if sig:
                 send_signal_ui(sig)
-            
-            # JEDA KRUSIAL (12 DETIK): Untuk menghindari error 429 Resource Exhausted
-            time.sleep(12) 
-        except Exception as e:
-            time.sleep(5)
+            time.sleep(12) # Jeda aman RPM
+        except:
             continue
 
 @bot.message_handler(commands=['cek'])
@@ -154,27 +171,30 @@ def manual_check(message):
             
         sym = parts[1].upper()
         sym = f"{sym}USDT" if not sym.endswith("USDT") else sym
-        bot.send_message(CHAT_ID, f"🔄 Menganalisis {sym} via Gemini 2.0...")
+        bot.send_message(CHAT_ID, f"🔄 Menganalisis {sym} dengan Rotasi AI...")
         
         res = call_binance_api(f"/api/v3/ticker/24hr?symbol={sym}")
         if res:
             sig = get_ai_analysis(res)
             if sig: send_signal_ui(sig)
-            else: bot.send_message(CHAT_ID, "⚠️ AI tidak melihat peluang saat ini.")
+            else: bot.send_message(CHAT_ID, "⚠️ AI belum menemukan setup valid.")
         else:
             bot.send_message(CHAT_ID, "❌ Koin tidak ditemukan.")
     except Exception as e:
         bot.send_message(CHAT_ID, f"❌ Error: {e}")
 
 if __name__ == "__main__":
-    try:
-        bot.send_message(CHAT_ID, "🏛️ **SMC System Online (Gemini 2.0 Flash)**\nMode: Safe Scan Enabled")
-        print("✅ Bot Ready.")
-    except: pass
-    
-    threading.Thread(target=bot.infinity_polling, daemon=True).start()
-    
-    while True:
-        run_scanner()
-        print("💤 Scan selesai. Istirahat 30 menit...")
-        time.sleep(1800)
+    if not ALL_KEYS:
+        print("❌ ERROR: GEMINI_API_KEY tidak ditemukan!")
+    else:
+        print(f"✅ Bot Ready dengan {len(ALL_KEYS)} API Keys.")
+        try:
+            bot.send_message(CHAT_ID, f"🏛️ **SMC System Online**\nKunci AI: {len(ALL_KEYS)} Terdeteksi\nVolume: 5M USDT")
+        except: pass
+        
+        threading.Thread(target=bot.infinity_polling, daemon=True).start()
+        
+        while True:
+            run_scanner()
+            print("💤 Scan selesai. Menunggu 30 menit...")
+            time.sleep(1800)
