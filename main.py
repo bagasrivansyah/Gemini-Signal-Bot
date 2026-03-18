@@ -124,7 +124,6 @@ def run_scanner():
         res = call_binance_api("/api/v3/ticker/24hr")
         if not res: return
         
-        # Filter: Hanya USDT dan Volume > 300.000
         all_targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 300000]
         all_targets = sorted(all_targets, key=lambda x: float(x['quoteVolume']), reverse=True)
         
@@ -132,19 +131,61 @@ def run_scanner():
         
         found = False
         for t in all_targets:
-            # Menggunakan get_ai_analysis yang memanggil get_ict_technical di dalamnya
             sig = get_ai_analysis(t)
             if sig and 'signal' in sig:
                 active_signals.append(sig)
                 send_signal_ui(sig)
                 found = True
                 print(f"✅ Sinyal Ditemukan: {t['symbol']}")
-                time.sleep(0.1) # Jeda agar tidak rate limit
+                time.sleep(0.1) 
                 
         if not found: 
             print(f"🌑 [{timestamp}] Scan Selesai: Belum ada setup FVG.")
     except Exception as e:
         print(f"❌ Error saat scan: {e}")
+
+# --- HANDLER PERINTAH TELEGRAM ---
+
+@bot.message_handler(commands=['cek'])
+def manual_check_coin(message):
+    try:
+        text_split = message.text.split()
+        if len(text_split) < 2:
+            bot.reply_to(message, "❌ Format salah. Gunakan: `/cek BTC` atau `/cek SOLUSDT`", parse_mode="Markdown")
+            return
+        
+        coin_input = text_split[1].upper()
+        symbol = coin_input if coin_input.endswith("USDT") else f"{coin_input}USDT"
+
+        bot.send_message(CHAT_ID, f"🔄 Sedang menganalisis {symbol} dengan AI ICT SMC...")
+
+        ticker_data = call_binance_api(f"/api/v3/ticker/24hr?symbol={symbol}")
+        if not ticker_data:
+            bot.send_message(CHAT_ID, f"❌ Koin {symbol} tidak ditemukan di Binance.")
+            return
+
+        # Coba analisa dengan logika ICT FVG
+        sig = get_ai_analysis(ticker_data)
+        
+        if sig:
+            send_signal_ui(sig)
+        else:
+            # Jika FVG tidak ada, minta AI prediksi berdasarkan harga saat ini
+            price_now = ticker_data['lastPrice']
+            prompt_umum = f"""
+            As an Expert ICT SMC Trader, analyze {symbol} at price {price_now}. 
+            No clear FVG found, but give your best bias (LONG/SHORT/WAIT) based on current price action.
+            Calculate TP (RR 1:2) and SL for 20x leverage.
+            Return ONLY JSON: 
+            {{"symbol": "{symbol}", "signal": "TYPE", "entry": {price_now}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "reason": "AI Insight"}}
+            """
+            response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt_umum)
+            clean_text = response.text.strip().replace('```json', '').replace('```', '').split('{')[-1].split('}')[0]
+            sig_manual = json.loads('{' + clean_text + '}')
+            send_signal_ui(sig_manual)
+                
+    except Exception as e:
+        bot.send_message(CHAT_ID, f"⚠️ Error analisis: {str(e)}")
 
 @bot.message_handler(func=lambda message: message.text == '🔍 Scan Market Sekarang')
 def manual_scan(message):
@@ -164,7 +205,7 @@ if __name__ == "__main__":
     try: 
         bot.remove_webhook()
         time.sleep(2) 
-        bot.send_message(CHAT_ID, "🏛️ **SMC System Online (Scan Seluruh Market)!**", reply_markup=main_keyboard())
+        bot.send_message(CHAT_ID, "🏛️ **SMC System Online (Scan & Manual Cek)!**", reply_markup=main_keyboard())
         print("✅ Bot Bagas Rivansyah Ready.")
     except: pass
     
@@ -172,7 +213,7 @@ if __name__ == "__main__":
     
     last_scan = 0
     while True:
-        if time.time() - last_scan > 600: # Scan setiap 10 menit
+        if time.time() - last_scan > 600: 
             run_scanner()
             last_scan = time.time()
         time.sleep(10)
