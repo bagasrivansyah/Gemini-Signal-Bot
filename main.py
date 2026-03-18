@@ -17,7 +17,6 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 bot = telebot.TeleBot(TOKEN_TELEGRAM)
 client = Groq(api_key=GROQ_API_KEY)
 
-# DAFTAR API BINANCE UNTUK REDUNDANCY
 BINANCE_URLS = [
     "https://api1.binance.com", 
     "https://api2.binance.com", 
@@ -25,7 +24,6 @@ BINANCE_URLS = [
     "https://data-api.binance.vision"
 ]
 
-# RAM STORAGE (Antrean Sinyal & Laporan)
 active_signals = []
 daily_stats = {"total": 0, "tp_hit": 0, "sl_hit": 0}
 
@@ -58,16 +56,16 @@ def get_ai_analysis(coin, condition):
     tech = get_technical_data(coin['symbol'])
     if tech['price'] == 0: return None
     
-    # OPTIMASI: Prompt dibuat "Wajib Memilih" agar AI tidak memberikan hasil kosong
+    # OPTIMASI PROMPT: Memaksa AI memberikan keputusan (Expert Mode)
     prompt = f"""
-    BERTINDAKLAH SEBAGAI TRADER FUTURES EXPERT.
+    BERTINDAKLAH SEBAGAI TRADER FUTURES AGRESIF.
     PAIR: {coin['symbol']} | PRICE: {tech['price']} | RSI: {tech['rsi']} | 24h: {coin['priceChangePercent']}%
-    VOL: {coin['quoteVolume']} | LEVERAGE: 20x
+    LEVERAGE: 20x
     
-    Tugas: Wajib berikan sinyal LONG atau SHORT. Jangan memberikan jawaban netral.
-    - Jika RSI < 45: Prioritas LONG (Oversold/Rebound).
-    - Jika RSI > 55: Prioritas SHORT (Overbought/Correction).
-    Hitung TP1 (ROI 20%), TP2 (ROI 40%), TP3 (ROI 100%) dan SL (ROI -50%) dari harga entry.
+    Tugas: Wajib berikan sinyal LONG atau SHORT. Cari peluang scalping terkecil.
+    - Jika RSI < 50: Prioritas LONG (target rebound).
+    - Jika RSI >= 50: Prioritas SHORT (target koreksi).
+    Hitung TP1 (ROI 20%), TP2 (ROI 50%), TP3 (ROI 100%) dan SL (ROI -50%) secara presisi.
     
     OUTPUT WAJIB JSON:
     {{"symbol": "{coin['symbol']}", "signal": "LONG/SHORT", "entry": {tech['price']}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "rsi": {tech['rsi']}, "reason": "Analisa singkat"}}
@@ -76,7 +74,8 @@ def get_ai_analysis(coin, condition):
     try:
         completion = client.chat.completions.create(
             model="llama3-70b-8192",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "system", "content": "You are a professional trader. Always output valid JSON."},
+                      {"role": "user", "content": prompt}],
             response_format={ "type": "json_object" }
         )
         return json.loads(completion.choices[0].message.content)
@@ -98,39 +97,32 @@ def send_signal_ui(sig_data):
         f"🎯 **Entry:** {sig_data['entry']}\n\n"
         f"✅ **Target Profit:**\n"
         f"  └ TP1: {sig_data['tp1']} (ROI 20%)\n"
-        f"  └ TP2: {sig_data['tp2']} (ROI 40%)\n"
+        f"  └ TP2: {sig_data['tp2']} (ROI 50%)\n"
         f"  └ TP3: {sig_data['tp3']} (ROI 100%)\n\n"
         f"🛑 **Stop Loss:** {sig_data['sl']}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"💡 **AI Reason:** _{sig_data.get('reason', 'N/A')}_\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔗 [LIHAT CHART DI TRADINGVIEW]({chart_url})\n"
-        f"⚠️ *Bagas Rivansyah: Gunakan Risk Management!*"
+        f"🔗 [LIHAT CHART]({chart_url})\n"
+        f"⚠️ *Bagas Rivansyah: Gunakan RM!*"
     )
-    bot.send_message(CHAT_ID, msg, parse_mode="Markdown", disable_web_page_preview=False)
+    bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
 
 def check_monitoring():
     global active_signals, daily_stats
     if not active_signals: return
-
     try:
         prices = call_binance_api("/api/v3/ticker/price")
         if not prices: return
-        
         price_map = {p['symbol']: float(p['price']) for p in prices}
-
         for sig in active_signals[:]:
             cp = price_map.get(sig['symbol'])
             if not cp: continue
-            
             is_long = sig['signal'].upper() == "LONG"
-
             if (is_long and cp <= sig['sl']) or (not is_long and cp >= sig['sl']):
                 bot.send_message(CHAT_ID, f"❌ **#{sig['symbol']} SL HIT!**")
-                daily_stats["sl_hit"] += 1
                 active_signals.remove(sig)
                 continue
-
             for i in range(1, 4):
                 tp_key = f'tp{i}'
                 hit_key = f'hit_tp{i}'
@@ -139,70 +131,60 @@ def check_monitoring():
                     if is_hit:
                         bot.send_message(CHAT_ID, f"✅ **#{sig['symbol']} TP{i} HIT!** 🚀")
                         sig[hit_key] = True
-                        if i == 3:
-                            daily_stats["tp_hit"] += 1
-                            active_signals.remove(sig)
-    except Exception as e:
-        print(f"Monitor Error: {e}")
+                        if i == 3: active_signals.remove(sig)
+    except: pass
 
 def run_scanner():
     global daily_stats
     print("Scanning Market...")
     try:
         res = call_binance_api("/api/v3/ticker/24hr")
-        if not res: 
-            bot.send_message(CHAT_ID, "❌ Gagal mengambil data Binance.")
-            return
+        if not res: return
         
-        # Tetap di volume > 500k untuk keamanan trading Bagas
-        usdt_pairs = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 500000]
-        sorted_c = sorted(usdt_pairs, key=lambda x: float(x['priceChangePercent']))
+        # OPTIMASI: Volume diturunkan ke 100k agar koin yang sedang bergejolak terdeteksi
+        usdt_pairs = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 100000]
+        sorted_c = sorted(usdt_pairs, key=lambda x: abs(float(x['priceChangePercent'])), reverse=True)
         
-        # Target 20 koin (Top 10 Dumps + Top 10 Pumps)
-        targets = sorted_c[:10] + sorted_c[-10:]
+        targets = sorted_c[:20] # Ambil 20 koin paling volatil
         
         found_any = False
         for t in targets:
             sig = get_ai_analysis(t, "SCAN")
-            if sig:
+            if sig and 'signal' in sig:
                 active_signals.append(sig)
                 send_signal_ui(sig)
                 daily_stats["total"] += 1
                 found_any = True
-                time.sleep(1) # Jeda untuk menghindari Rate Limit Groq
+                time.sleep(1)
         
         if not found_any:
-            bot.send_message(CHAT_ID, "🔍 Scan selesai: Belum ada setup koin yang likuid.")
-            
+            bot.send_message(CHAT_ID, "🔍 Scan selesai: Market sedang sideways berat.")
     except Exception as e:
         print(f"Scanner Error: {e}")
 
 def main_keyboard():
     markup = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    btn_scan = telebot.types.KeyboardButton('🔍 Scan Market Sekarang')
-    btn_status = telebot.types.KeyboardButton('📊 Status Bot')
-    markup.add(btn_scan, btn_status)
+    markup.add(telebot.types.KeyboardButton('🔍 Scan Market Sekarang'), telebot.types.KeyboardButton('📊 Status Bot'))
     return markup
 
 @bot.message_handler(func=lambda message: message.text == '🔍 Scan Market Sekarang')
 def manual_scan(message):
-    bot.send_message(CHAT_ID, "🚀 Memulai pemindaian manual (20 koin target)...")
+    bot.send_message(CHAT_ID, "🚀 Memulai pemindaian agresif (Target 20 koin)...")
     run_scanner()
 
 @bot.message_handler(func=lambda message: message.text == '📊 Status Bot')
 def bot_status(message):
     msg = (f"🤖 **Status Bot:** Aktif\n"
            f"📈 Sinyal Aktif: {len(active_signals)}\n"
-           f"💰 Volume Filter: > 500,000 USDT\n"
-           f"🎯 Target Scan: 20 Koin (Top 10 Gain/Loss)")
+           f"💰 Volume Filter: > 100,000 USDT\n"
+           f"🎯 Target Scan: 20 Koin Volatilitas Tertinggi")
     bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
 
 if __name__ == "__main__":
     try:
-        bot.send_message(CHAT_ID, f"🚀 **Bot AI Bagas Rivansyah Online!**\nTarget: 20 koin | Vol: 500k", reply_markup=main_keyboard())
-    except:
-        pass
-        
+        bot.send_message(CHAT_ID, f"🚀 **Bot AI Bagas Rivansyah Online!**\nSistem monitoring & scan otomatis aktif.", reply_markup=main_keyboard())
+    except: pass
+    
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
     last_scan = 0
@@ -210,6 +192,5 @@ if __name__ == "__main__":
         if time.time() - last_scan > 3600:
             run_scanner()
             last_scan = time.time()
-        
         check_monitoring()
         time.sleep(30)
