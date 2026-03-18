@@ -15,8 +15,9 @@ TOKEN_TELEGRAM = os.getenv("TOKEN_TELEGRAM") or os.getenv("TOKEN TELEGRAM")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("KUNCI_API_GEMINI")
 CHAT_ID = os.getenv("CHAT_ID") or os.getenv("ID_CHAT_TELEGRAM")
 
-# --- INISIALISASI CLIENT V1BETA (FIX 404) ---
+# --- INISIALISASI CLIENT V1BETA ---
 try:
+    # Inisialisasi client tetap menggunakan v1beta
     client = genai.Client(
         api_key=GEMINI_API_KEY,
         http_options={'api_version': 'v1beta'}
@@ -27,9 +28,8 @@ except Exception as e:
 
 bot = telebot.TeleBot(TOKEN_TELEGRAM)
 
-# --- SISTEM KONEKSI BINANCE (RETRY & HEADER) ---
+# --- SISTEM KONEKSI BINANCE (ANTI-BLOKIR) ---
 def call_binance_api(endpoint):
-    # Menggunakan daftar endpoint lengkap untuk menghindari blokir IP Railway
     endpoints = [
         "https://api.binance.com",
         "https://api3.binance.com",
@@ -42,7 +42,6 @@ def call_binance_api(endpoint):
     }
     for base_url in endpoints:
         try:
-            # Timeout diperpendek agar cepat berganti endpoint jika lambat
             response = requests.get(f"{base_url}{endpoint}", headers=headers, timeout=5) 
             if response.status_code == 200: 
                 return response.json()
@@ -82,7 +81,7 @@ def get_ict_technical(symbol):
     except: 
         return None
 
-# --- AI ANALYSIS V1BETA MODE (FIX 404 PATH) ---
+# --- AI ANALYSIS (FIX PERMANEN 404) ---
 def get_ai_analysis(coin_data, custom_prompt=None):
     symbol = coin_data['symbol']
     ict = get_ict_technical(symbol)
@@ -101,19 +100,30 @@ def get_ai_analysis(coin_data, custom_prompt=None):
         prompt = custom_prompt
 
     try:
-        # PERBAIKAN: Gunakan 'gemini-1.5-flash-latest' agar terdeteksi di API v1beta
+        # SOLUSI FINAL: Menggunakan Full Resource Path agar tidak 404
         response = client.models.generate_content(
-            model='gemini-1.5-flash-latest', 
+            model='publishers/google/models/gemini-1.5-flash', 
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type='application/json' 
             )
         )
         
-        return json.loads(response.text.strip())
+        if response.text:
+            return json.loads(response.text.strip())
+        return None
     except Exception as e:
         print(f"❌ Kesalahan Gemini ({symbol}): {e}")
-        return None
+        # Fallback otomatis ke model Pro jika Flash bermasalah
+        try:
+            response = client.models.generate_content(
+                model='publishers/google/models/gemini-1.5-pro',
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type='application/json')
+            )
+            return json.loads(response.text.strip())
+        except:
+            return None
 
 def send_signal_ui(sig_data):
     if not sig_data: return
@@ -189,7 +199,7 @@ def manual_scan(message):
 
 @bot.message_handler(func=lambda m: m.text == '📊 Status Bot')
 def bot_status(message):
-    bot.send_message(CHAT_ID, f"🤖 **SMC System:** v1beta Aktif\n👤 **Dev:** Bagas Rivansyah", parse_mode="Markdown")
+    bot.send_message(CHAT_ID, f"🤖 **SMC System:** v1beta Online\n👤 **Dev:** Bagas Rivansyah", parse_mode="Markdown")
 
 def main_keyboard():
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -198,7 +208,7 @@ def main_keyboard():
 
 if __name__ == "__main__":
     try:
-        bot.send_message(CHAT_ID, "🏛️ **SMC System Online (Fix 404 & Region Sync)!**", reply_markup=main_keyboard())
+        bot.send_message(CHAT_ID, "🏛️ **SMC System Online (Full Path Path Fixed)!**", reply_markup=main_keyboard())
         print("✅ Bot Bagas Rivansyah Ready.")
     except: pass
     
