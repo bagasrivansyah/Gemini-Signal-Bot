@@ -1,5 +1,7 @@
-google-genai
 pyTelegramBotAPI
 requests
 pandas
 pandas_ta
+google-genai
+groq
+python-dotenv
