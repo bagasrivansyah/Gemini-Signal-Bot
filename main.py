@@ -5,6 +5,7 @@ import pandas as pd
 import pandas_ta as ta
 from google import genai 
 from google.genai import types 
+from groq import Groq # <--- Tambahan: Import Groq
 import time
 import json
 from datetime import datetime
@@ -13,11 +14,12 @@ import re
 
 # === CONFIGURATION ===
 TOKEN_TELEGRAM = os.getenv("TOKEN_TELEGRAM")
-# Masukkan kunci dipisah koma di Railway, contoh: kunci1,kunci2,kunci3
 RAW_KEYS = os.getenv("GEMINI_API_KEY") or os.getenv("KUNCI_API_GEMINI")
 CHAT_ID = os.getenv("CHAT_ID") or os.getenv("ID_CHAT_TELEGRAM")
+# Tambahan: API Key Groq
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# Parsing Multiple Keys
+# Parsing Multiple Keys Gemini
 ALL_KEYS = [k.strip() for k in RAW_KEYS.split(",")] if RAW_KEYS else []
 current_key_index = 0
 
@@ -37,6 +39,7 @@ def switch_key():
 
 # Model yang digunakan
 MODEL_NAME = "gemini-2.0-flash"
+GROQ_MODEL = "llama-3.3-70b-versatile" # <--- Model terbaik Groq
 
 bot = telebot.TeleBot(TOKEN_TELEGRAM)
 
@@ -72,10 +75,14 @@ def get_ict_technical(symbol):
         return None
     except: return None
 
-# --- AI ANALYSIS DENGAN AUTO-ROTATION ---
+# --- AI ANALYSIS DENGAN AUTO-ROTATION & GROQ FALLBACK ---
 def get_ai_analysis(coin_data, retry_count=0):
+    # Jika Gemini habis, coba pakai Groq
     if retry_count >= len(ALL_KEYS):
-        print("❌ Semua API Key sudah mencapai limit harian.")
+        if GROQ_API_KEY:
+            print(f"🚀 Gemini Limit. Mencoba Groq untuk {coin_data['symbol']}...")
+            return get_groq_analysis(coin_data)
+        print("❌ Semua API Key Gemini habis & Groq tidak tersedia.")
         return None
 
     symbol = coin_data['symbol']
@@ -117,9 +124,29 @@ def get_ai_analysis(coin_data, retry_count=0):
             print(f"⚠️ Key index {current_key_index} Limit! Mencoba key lain...")
             switch_key()
             time.sleep(2)
-            return get_ai_analysis(coin_data, retry_count + 1) # Retry dengan key baru
+            return get_ai_analysis(coin_data, retry_count + 1)
         else:
             print(f"❌ Error AI {symbol}: {e}")
+        return None
+
+# --- TAMBAHAN: FUNGSI ANALISIS GROQ ---
+def get_groq_analysis(coin_data):
+    try:
+        symbol = coin_data['symbol']
+        price = coin_data.get('lastPrice') or coin_data.get('price')
+        ict = get_ict_technical(symbol)
+        
+        client = Groq(api_key=GROQ_API_KEY)
+        prompt = f"Role: Expert ICT SMC Trader. Pair: {symbol} at {price}. Bias: {ict['side'] if ict else 'Neutral'}. Give signal in RAW JSON ONLY: {{\"symbol\": \"{symbol}\", \"signal\": \"LONG/SHORT/WAIT\", \"entry\": {price}, \"tp1\": 0, \"tp2\": 0, \"tp3\": 0, \"sl\": 0, \"reason\": \"AI analysis\"}}"
+        
+        completion = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        return json.loads(completion.choices[0].message.content)
+    except Exception as e:
+        print(f"❌ Error Groq {coin_data['symbol']}: {e}")
         return None
 
 def send_signal_ui(sig_data):
@@ -148,7 +175,6 @@ def run_scanner():
     res = call_binance_api("/api/v3/ticker/24hr")
     if not res: return
     
-    # Filter Volume > 5.000.000 USDT sesuai permintaan
     targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 5000000]
     targets = sorted(targets, key=lambda x: float(x['quoteVolume']), reverse=True)[:7]
     
@@ -157,7 +183,7 @@ def run_scanner():
             sig = get_ai_analysis(t)
             if sig:
                 send_signal_ui(sig)
-            time.sleep(12) # Jeda aman RPM
+            time.sleep(12) 
         except:
             continue
 
@@ -171,7 +197,7 @@ def manual_check(message):
             
         sym = parts[1].upper()
         sym = f"{sym}USDT" if not sym.endswith("USDT") else sym
-        bot.send_message(CHAT_ID, f"🔄 Menganalisis {sym} dengan Rotasi AI...")
+        bot.send_message(CHAT_ID, f"🔄 Menganalisis {sym} dengan AI...")
         
         res = call_binance_api(f"/api/v3/ticker/24hr?symbol={sym}")
         if res:
@@ -187,9 +213,9 @@ if __name__ == "__main__":
     if not ALL_KEYS:
         print("❌ ERROR: GEMINI_API_KEY tidak ditemukan!")
     else:
-        print(f"✅ Bot Ready dengan {len(ALL_KEYS)} API Keys.")
+        print(f"✅ Bot Ready dengan {len(ALL_KEYS)} Gemini Keys & Groq Fallback.")
         try:
-            bot.send_message(CHAT_ID, f"🏛️ **SMC System Online**\nKunci AI: {len(ALL_KEYS)} Terdeteksi\nVolume: 5M USDT")
+            bot.send_message(CHAT_ID, f"🏛️ **SMC System Online**\nKunci Gemini: {len(ALL_KEYS)}\nGroq: {'Aktif' if GROQ_API_KEY else 'Non-Aktif'}")
         except: pass
         
         threading.Thread(target=bot.infinity_polling, daemon=True).start()
