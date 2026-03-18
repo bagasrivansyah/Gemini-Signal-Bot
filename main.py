@@ -17,7 +17,6 @@ CHAT_ID = os.getenv("CHAT_ID") or os.getenv("ID_CHAT_TELEGRAM")
 
 # --- INISIALISASI CLIENT V1BETA (FIX 404) ---
 try:
-    # Menggunakan api_version v1beta secara eksplisit untuk mendukung fitur terbaru
     client = genai.Client(
         api_key=GEMINI_API_KEY,
         http_options={'api_version': 'v1beta'}
@@ -28,21 +27,23 @@ except Exception as e:
 
 bot = telebot.TeleBot(TOKEN_TELEGRAM)
 
-# --- SISTEM KONEKSI BINANCE (ANTI-BLOKIR) ---
+# --- SISTEM KONEKSI BINANCE (RETRY & HEADER) ---
 def call_binance_api(endpoint):
+    # Menggunakan daftar endpoint lengkap untuk menghindari blokir IP Railway
     endpoints = [
+        "https://api.binance.com",
         "https://api3.binance.com",
         "https://data-api.binance.vision",
-        "https://api1.binance.com", 
-        "https://api.binance.com"
+        "https://api1.binance.com"
     ]
     headers = {
-        'User-Agent': 'Mozilla/5.0',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'application/json'
     }
     for base_url in endpoints:
         try:
-            response = requests.get(f"{base_url}{endpoint}", headers=headers, timeout=10) 
+            # Timeout diperpendek agar cepat berganti endpoint jika lambat
+            response = requests.get(f"{base_url}{endpoint}", headers=headers, timeout=5) 
             if response.status_code == 200: 
                 return response.json()
         except: 
@@ -81,7 +82,7 @@ def get_ict_technical(symbol):
     except: 
         return None
 
-# --- AI ANALYSIS V1BETA MODE ---
+# --- AI ANALYSIS V1BETA MODE (FIX 404 PATH) ---
 def get_ai_analysis(coin_data, custom_prompt=None):
     symbol = coin_data['symbol']
     ict = get_ict_technical(symbol)
@@ -92,7 +93,7 @@ def get_ai_analysis(coin_data, custom_prompt=None):
         prompt = f"""
         Role: Expert ICT SMC Trader. Pair: {symbol} at {price}.
         ICT Bias: {ict['side']}, SL: {ict['sl']}, Logic: {ict['reason']}.
-        Requirement: 20x Leverage. TP1 (RR 1:1), TP2 (RR 1:2), TP3 (RR 1:3).
+        Goal: 20x Leverage signal. TP1 (RR 1:1), TP2 (RR 1:2), TP3 (RR 1:3).
         Return ONLY JSON format:
         {{"symbol": "{symbol}", "signal": "{ict['side']}", "entry": {price}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": {ict['sl']}, "reason": "{ict['reason']}"}}
         """
@@ -100,10 +101,9 @@ def get_ai_analysis(coin_data, custom_prompt=None):
         prompt = custom_prompt
 
     try:
-        # PERBAIKAN KRITIS: Jangan gunakan 'models/gemini-1.5-flash'.
-        # SDK google-genai otomatis menambahkan prefix 'models/' di background.
+        # PERBAIKAN: Gunakan 'gemini-1.5-flash-latest' agar terdeteksi di API v1beta
         response = client.models.generate_content(
-            model='gemini-1.5-flash', 
+            model='gemini-1.5-flash-latest', 
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type='application/json' 
@@ -112,7 +112,6 @@ def get_ai_analysis(coin_data, custom_prompt=None):
         
         return json.loads(response.text.strip())
     except Exception as e:
-        # Log ini akan muncul di Railway untuk memudahkan debugging
         print(f"❌ Kesalahan Gemini ({symbol}): {e}")
         return None
 
@@ -147,7 +146,6 @@ def run_scanner():
         res = call_binance_api("/api/v3/ticker/24hr")
         if not res: return
         
-        # Filter koin volume > 2jt USDT agar sinyal lebih berkualitas
         all_targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 2000000]
         all_targets = sorted(all_targets, key=lambda x: float(x['quoteVolume']), reverse=True)[:25]
         
