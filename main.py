@@ -16,7 +16,7 @@ CHAT_ID = os.getenv("CHAT_ID") or os.getenv("ID_CHAT_TELEGRAM")
 
 try:
     client = genai.Client(api_key=GEMINI_API_KEY)
-    print("✅ Gemini AI Terhubung (ICT SMC Mode Active).")
+    print("✅ Gemini AI Terhubung (ICT SMC Agresif Active).")
 except Exception as e:
     print(f"❌ Gagal AI: {e}")
 
@@ -25,14 +25,14 @@ active_signals = []
 
 # --- TEKNIKAL ICT SMC ---
 def get_htf_trend(symbol):
-    """Cek trend di timeframe 4H untuk konfirmasi arah besar"""
+    """Cek trend di timeframe 4H untuk info di pesan"""
     data = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=4h&limit=5")
-    if not data: return None
+    if not data: return "UNKNOWN"
     c4 = [float(x[4]) for x in data]
     return "BULLISH" if c4[-1] > c4[-2] else "BEARISH"
 
 def get_ict_technical(symbol):
-    """Mendeteksi FVG, Displacement, dan Swing Points"""
+    """Mendeteksi FVG & Displacement (Mode Agresif)"""
     try:
         data = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=1h&limit=30")
         if not data or len(data) < 10: return None
@@ -40,47 +40,40 @@ def get_ict_technical(symbol):
         c = [{"h": float(x[2]), "l": float(x[3]), "c": float(x[4]), "v": float(x[5])} for x in data]
         avg_vol = sum([x['v'] for x in c[-10:]]) / 10
         current_vol = c[-2]['v']
-        # Optimasi: Displacement 1.3x agar lebih sensitif di market volatile
-        has_displacement = current_vol > (avg_vol * 1.3) 
+        
+        # Agresif: Lonjakan volume diturunkan ke 1.1x
+        has_displacement = current_vol > (avg_vol * 1.1) 
 
+        # Info trend HTF untuk pelengkap alasan AI
         htf = get_htf_trend(symbol)
         price = c[-1]['c']
         
-        # Logika ICT: Fair Value Gap (FVG)
-        if htf == "BULLISH" and c[-2]['l'] > c[-4]['h'] and has_displacement:
+        # Logika ICT: Bullish FVG (Tanpa blokir HTF)
+        if c[-2]['l'] > c[-4]['h'] and has_displacement:
             swing_low = min([x['l'] for x in c[-10:-1]])
-            return {"side": "LONG", "reason": "BULLISH FVG + Displacement + HTF", "sl": swing_low * 0.998, "price": price}
+            return {"side": "LONG", "reason": f"BULLISH FVG + Vol Alert (HTF: {htf})", "sl": swing_low * 0.998, "price": price}
             
-        if htf == "BEARISH" and c[-2]['h'] < c[-4]['l'] and has_displacement:
+        # Logika ICT: Bearish FVG (Tanpa blokir HTF)
+        if c[-2]['h'] < c[-4]['l'] and has_displacement:
             swing_high = max([x['h'] for x in c[-10:-1]])
-            return {"side": "SHORT", "reason": "BEARISH FVG + Displacement + HTF", "sl": swing_high * 1.002, "price": price}
+            return {"side": "SHORT", "reason": f"BEARISH FVG + Vol Alert (HTF: {htf})", "sl": swing_high * 1.002, "price": price}
             
         return None
     except: return None
 
 def call_binance_api(endpoint):
-    # Perbaikan: Rotasi endpoint dan headers lengkap untuk menembus blokir IP
     endpoints = [
-        "https://api.binance.com",
-        "https://api1.binance.com",
-        "https://api2.binance.com",
-        "https://api3.binance.com",
+        "https://api.binance.com", "https://api1.binance.com", 
+        "https://api2.binance.com", "https://api3.binance.com", 
         "https://data-api.binance.vision"
     ]
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': 'application/json'
-    }
-
+    headers = {'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json'}
     for base_url in endpoints:
         try:
             url = f"{base_url}{endpoint}"
-            response = requests.get(url, headers=headers, timeout=15) 
-            if response.status_code == 200:
-                return response.json()
-        except:
-            continue
+            response = requests.get(url, headers=headers, timeout=10) 
+            if response.status_code == 200: return response.json()
+        except: continue
     return None
 
 def get_ai_analysis(coin):
@@ -94,7 +87,6 @@ def get_ai_analysis(coin):
     Return ONLY JSON:
     {{"symbol": "{coin['symbol']}", "signal": "{ict['side']}", "entry": {ict['price']}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": {ict['sl']}, "reason": "{ict['reason']}"}}
     """
-    
     try:
         response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
         clean_text = response.text.strip().replace('```json', '').replace('```', '').split('{')[-1].split('}')[0]
@@ -127,42 +119,41 @@ def send_signal_ui(sig_data):
 
 def run_scanner():
     timestamp = datetime.now().strftime('%H:%M:%S')
-    print(f"🔍 [{timestamp}] Memulai pemindaian ICT SMC...")
+    print(f"🔍 [{timestamp}] Memulai pemindaian SELURUH Market USDT...")
     try:
         res = call_binance_api("/api/v3/ticker/24hr")
-        if not res: 
-            print(f"⚠️ [{timestamp}] Gagal mengambil data Binance. Mencoba titik akhir lain...")
-            return
+        if not res: return
         
-        # Volume minimal 300.000 agar lebih aktif di market volatile
-        targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 300000]
-        targets = sorted(targets, key=lambda x: abs(float(x['priceChangePercent'])), reverse=True)[:15]
+        # Filter: Hanya USDT dan Volume > 300.000
+        all_targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 300000]
+        all_targets = sorted(all_targets, key=lambda x: float(x['quoteVolume']), reverse=True)
+        
+        print(f"Total koin dicek: {len(all_targets)}")
         
         found = False
-        for t in targets:
-            print(f"🧐 Mengecek: {t['symbol']} | Volume: {float(t['quoteVolume']):,.0f}")
-            
+        for t in all_targets:
+            # Menggunakan get_ai_analysis yang memanggil get_ict_technical di dalamnya
             sig = get_ai_analysis(t)
             if sig and 'signal' in sig:
                 active_signals.append(sig)
                 send_signal_ui(sig)
                 found = True
                 print(f"✅ Sinyal Ditemukan: {t['symbol']}")
+                time.sleep(0.1) # Jeda agar tidak rate limit
                 
         if not found: 
             print(f"🌑 [{timestamp}] Scan Selesai: Belum ada setup FVG.")
-            bot.send_message(CHAT_ID, "🔍 Selesai: Setup ICT (FVG) belum ditemukan.")
     except Exception as e:
         print(f"❌ Error saat scan: {e}")
 
 @bot.message_handler(func=lambda message: message.text == '🔍 Scan Market Sekarang')
 def manual_scan(message):
-    bot.send_message(CHAT_ID, "🚀 Mencari Setup ICT SMC Pro...")
+    bot.send_message(CHAT_ID, "🚀 Mencari Setup ICT SMC Agresif di Seluruh Market...")
     run_scanner()
 
 @bot.message_handler(func=lambda message: message.text == '📊 Status Bot')
 def bot_status(message):
-    bot.send_message(CHAT_ID, f"🤖 **SMC System:** Aktif\n🎯 **Mode:** ICT FVG + Displacement\n📈 Sinyal Aktif: {len(active_signals)}\n👤 Developer: Bagas Rivansyah", parse_mode="Markdown")
+    bot.send_message(CHAT_ID, f"🤖 **SMC System:** Aktif (Agresif)\n📈 Sinyal Aktif: {len(active_signals)}\n👤 Developer: Bagas Rivansyah", parse_mode="Markdown")
 
 def main_keyboard():
     markup = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
@@ -173,16 +164,15 @@ if __name__ == "__main__":
     try: 
         bot.remove_webhook()
         time.sleep(2) 
-        bot.send_message(CHAT_ID, "🏛️ **SMC Trading System Online!**", reply_markup=main_keyboard())
+        bot.send_message(CHAT_ID, "🏛️ **SMC System Online (Scan Seluruh Market)!**", reply_markup=main_keyboard())
         print("✅ Bot Bagas Rivansyah Ready.")
-    except Exception as e:
-        print(f"⚠️ Gagal inisialisasi: {e}")
+    except: pass
     
     threading.Thread(target=bot.infinity_polling, kwargs={'timeout': 20}, daemon=True).start()
     
     last_scan = 0
     while True:
-        if time.time() - last_scan > 600: # Dipercepat menjadi 10 menit agar lebih responsif
+        if time.time() - last_scan > 600: # Scan setiap 10 menit
             run_scanner()
             last_scan = time.time()
         time.sleep(10)
