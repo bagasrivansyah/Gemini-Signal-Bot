@@ -6,6 +6,7 @@ import time
 import threading
 import re
 from datetime import datetime, timezone
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton # Tambahan untuk tombol
 from groq import Groq 
 
 # === CONFIGURATION ===
@@ -18,11 +19,26 @@ ACTIVE_SIGNALS = []
 TRADE_HISTORY = [] 
 LEVERAGE = 20
 
+# Blacklist Koin Stable agar tidak dianalisa
+STABLE_COINS = [
+    "USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "DAIUSDT", "AEURUSDT", 
+    "EURUSDT", "GBPUSDT", "BUSDUSDT", "USDPUSDT", "PAXGUSDT", "USDTUSDT"
+]
+
 # Model Configuration Groq
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 bot = telebot.TeleBot(TOKEN_TELEGRAM)
 client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+
+# --- FUNGSI TOMBOL MENU ---
+def main_menu():
+    markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    markup.add(
+        KeyboardButton("🔍 Scan Market Sekarang"),
+        KeyboardButton("📊 Status Bot")
+    )
+    return markup
 
 # --- FUNGSI FORMAT HARGA ---
 def format_price(val):
@@ -62,10 +78,7 @@ def get_ict_technical(symbol):
 
 # --- AI ANALYSIS (GROQ ONLY) ---
 def get_ai_analysis(coin_data):
-    if not client_groq:
-        print("❌ Error: GROQ_API_KEY tidak dikonfigurasi.")
-        return None
-
+    if not client_groq: return None
     symbol = coin_data['symbol']
     price = float(coin_data.get('lastPrice') or coin_data.get('price'))
     ict = get_ict_technical(symbol)
@@ -73,32 +86,17 @@ def get_ai_analysis(coin_data):
     prompt = f"""
     Role: Expert ICT SMC Crypto Trader. Pair: {symbol} at {format_price(price)}.
     Technical Bias: {ict['side'] if ict else 'Neutral'}.
-    Task: Berikan trading signal dalam format RAW JSON. Wajib sertakan tp1, tp2, tp3, dan sl.
-    Dilarang menggunakan scientific notation (e-07), tulis angka desimal lengkap.
-    
-    Format JSON:
-    {{
-        "symbol": "{symbol}",
-        "signal": "LONG/SHORT/WAIT",
-        "entry": {price},
-        "tp1": 0,
-        "tp2": 0,
-        "tp3": 0,
-        "sl": 0,
-        "reason": "Expert analysis singkat"
-    }}
+    Task: Berikan trading signal RAW JSON. Wajib TP1, TP2, TP3, dan SL.
+    Dilarang menggunakan scientific notation (e-07).
+    JSON: {{"symbol": "{symbol}", "signal": "LONG/SHORT/WAIT", "entry": {price}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "reason": "Expert analysis singkat"}}
     """
-    
     try:
         completion = client_groq.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[{"role": "user", "content": prompt}],
+            model=GROQ_MODEL, messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )
         return json.loads(completion.choices[0].message.content)
-    except Exception as e:
-        print(f"❌ Groq Error {symbol}: {e}")
-        return None
+    except: return None
 
 # --- MONITORING TP/SL & ROI ---
 def monitor_active_signals():
@@ -109,42 +107,32 @@ def monitor_active_signals():
                 symbol = sig['symbol']
                 res = call_binance_api(f"/api/v3/ticker/price?symbol={symbol}")
                 if not res: continue
-                
                 curr_price = float(res['price'])
                 entry = float(sig['entry'])
                 side = sig['signal'].upper()
                 
-                roi = 0
                 is_hit = False
-                status = ""
-
                 if (side == "LONG" and curr_price <= float(sig['sl'])) or (side == "SHORT" and curr_price >= float(sig['sl'])):
-                    roi = -100 
+                    sig['roi'] = -100
                     status = "🛑 SL HIT"
                     is_hit = True
-                
                 elif (side == "LONG" and curr_price >= float(sig['tp3'])) or (side == "SHORT" and curr_price <= float(sig['tp3'])):
-                    roi = abs((curr_price - entry) / entry) * 100 * LEVERAGE
+                    sig['roi'] = abs((curr_price - entry) / entry) * 100 * LEVERAGE
                     status = "🎯 TP3 HIT (MAX)"
                     is_hit = True
-                
                 elif (side == "LONG" and curr_price >= float(sig['tp1'])) or (side == "SHORT" and curr_price <= float(sig['tp1'])):
                     if "tp1_notified" not in sig:
                         bot.send_message(CHAT_ID, f"✅ **TP1 REACHED**\n#{symbol}\nPrice: {format_price(curr_price)}")
                         sig['tp1_notified'] = True
 
                 if is_hit:
-                    msg = f"{status}\n━━━━━━━━━━━━━━\n🪙 #{symbol}\n📈 ROI: {roi:,.2f}%\n💵 Exit: {format_price(curr_price)}"
+                    msg = f"{status}\n━━━━━━━━━━━━━━\n🪙 #{symbol}\n📈 ROI: {sig['roi']:,.2f}%\n💵 Exit: {format_price(curr_price)}"
                     bot.send_message(CHAT_ID, msg)
-                    sig['roi'] = roi
                     sig['close_time'] = datetime.now(timezone.utc)
                     TRADE_HISTORY.append(sig)
                     ACTIVE_SIGNALS.remove(sig)
-            
             time.sleep(60) 
-        except Exception as e:
-            print(f"Monitor Error: {e}")
-            time.sleep(60)
+        except: time.sleep(60)
 
 # --- LAPORAN HARIAN ---
 def send_daily_report():
@@ -152,28 +140,17 @@ def send_daily_report():
     while True:
         now = datetime.now(timezone.utc)
         if now.hour == 0 and now.minute == 0:
-            if not TRADE_HISTORY:
-                bot.send_message(CHAT_ID, "📊 **Laporan Harian**\nTidak ada trade selesai hari ini.")
-            else:
+            if TRADE_HISTORY:
                 total_roi = sum([t['roi'] for t in TRADE_HISTORY])
                 wins = len([t for t in TRADE_HISTORY if t['roi'] > 0])
                 total = len(TRADE_HISTORY)
-                
-                report = (
-                    f"📊 **LAPORAN HARIAN SMC AI (GROQ)**\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"✅ Total Trade: {total}\n"
-                    f"🏆 Winrate: {(wins/total)*100:.1f}%\n"
-                    f"💰 Total ROI: {total_roi:,.2f}%\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"Semoga besok lebih cuan!"
-                )
+                report = f"📊 **LAPORAN HARIAN (GROQ)**\n━━━━━━━━━━━━━━\n✅ Total Trade: {total}\n🏆 Winrate: {(wins/total)*100:.1f}%\n💰 Total ROI: {total_roi:,.2f}%"
                 bot.send_message(CHAT_ID, report)
                 TRADE_HISTORY = [] 
             time.sleep(70) 
         time.sleep(30)
 
-# --- UI & SCANNER ---
+# --- UI SEND SIGNAL ---
 def send_signal_ui(sig_data):
     if not sig_data or sig_data.get('signal') not in ['LONG', 'SHORT']: return
     symbol = sig_data['symbol']
@@ -200,42 +177,85 @@ def send_signal_ui(sig_data):
     bot.send_message(CHAT_ID, msg, parse_mode="Markdown", disable_web_page_preview=False)
     ACTIVE_SIGNALS.append(sig_data) 
 
+# --- SCANNER (Hanya Gainer & Loser, No Stablecoins) ---
 def run_scanner():
     print(f"🔍 Scanning Market: {datetime.now(timezone.utc)}")
     res = call_binance_api("/api/v3/ticker/24hr")
     if not res: return
     
-    valid = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 5000000]
-    gainers = sorted(valid, key=lambda x: float(x['priceChangePercent']), reverse=True)[:4]
-    losers = sorted(valid, key=lambda x: float(x['priceChangePercent']))[:4]
-    trending = sorted(valid, key=lambda x: float(x['quoteVolume']), reverse=True)[:4]
+    # Filter: Berakhir USDT, Bukan Stablecoin, Volume > 5M
+    valid = [
+        c for c in res 
+        if c['symbol'].endswith("USDT") 
+        and c['symbol'] not in STABLE_COINS 
+        and float(c['quoteVolume']) > 5000000
+    ]
     
-    targets = {t['symbol']: t for t in (gainers + losers + trending)}.values()
+    # Fokus Hanya pada Top 5 Gainers & Top 5 Losers
+    gainers = sorted(valid, key=lambda x: float(x['priceChangePercent']), reverse=True)[:5]
+    losers = sorted(valid, key=lambda x: float(x['priceChangePercent']))[:5]
+    
+    targets = {t['symbol']: t for t in (gainers + losers)}.values()
     for t in targets:
         try:
             if any(s['symbol'] == t['symbol'] for s in ACTIVE_SIGNALS): continue
             sig = get_ai_analysis(t)
             if sig: send_signal_ui(sig)
-            time.sleep(5) # Groq lebih cepat, delay bisa dikurangi
+            time.sleep(5) 
         except: continue
 
+# --- HANDLERS (Manual Cek & Tombol) ---
+@bot.message_handler(commands=['start'])
+def start_cmd(message):
+    bot.send_message(message.chat.id, "🏛️ **SMC AI Bot System Aktif**\nSilahkan gunakan menu di bawah:", parse_mode="Markdown", reply_markup=main_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🔍 Scan Market Sekarang")
+def manual_scan_btn(message):
+    bot.send_message(message.chat.id, "🔄 Memulai pemindaian pasar instan...")
+    threading.Thread(target=run_scanner).start()
+
+@bot.message_handler(func=lambda m: m.text == "📊 Status Bot")
+def status_btn(message):
+    total_active = len(ACTIVE_SIGNALS)
+    active_pairs = ", ".join([s['symbol'] for s in ACTIVE_SIGNALS]) if ACTIVE_SIGNALS else "Tidak ada"
+    status_msg = f"🟢 **Bot Status: Online**\n\n🎯 Sinyal Aktif: {total_active}\n🪙 Koin dipantau: {active_pairs}"
+    bot.send_message(message.chat.id, status_msg, parse_mode="Markdown")
+
 @bot.message_handler(commands=['cek'])
+@bot.message_handler(func=lambda m: m.text.startswith('/cek'))
 def manual_check(message):
     try:
-        sym = message.text.split()[1].upper()
-        sym = f"{sym}USDT" if not sym.endswith("USDT") else sym
-        bot.send_message(CHAT_ID, f"🔄 Menganalisis {sym} dengan Groq AI...")
-        res = call_binance_api(f"/api/v3/ticker/24hr?symbol={sym}")
+        parts = message.text.split()
+        if len(parts) < 2:
+            bot.reply_to(message, "Gunakan: `/cek BTC`", parse_mode="Markdown")
+            return
+            
+        coin = parts[1].upper()
+        symbol = f"{coin}USDT" if not coin.endswith("USDT") else coin
+        
+        if symbol in STABLE_COINS:
+            bot.reply_to(message, "⚠️ Koin stable tidak didukung untuk analisa.")
+            return
+
+        bot.send_message(CHAT_ID, f"🔄 Menganalisis {symbol} dengan Groq AI...")
+        res = call_binance_api(f"/api/v3/ticker/24hr?symbol={symbol}")
         if res:
             sig = get_ai_analysis(res)
             if sig: send_signal_ui(sig)
-        else: bot.send_message(CHAT_ID, "❌ Koin tidak ditemukan.")
-    except: bot.reply_to(message, "Gunakan: /cek BTC")
+            else: bot.send_message(CHAT_ID, f"⚠️ AI belum menemukan peluang valid di {symbol}.")
+        else:
+            bot.send_message(CHAT_ID, f"❌ Pair {symbol} tidak ditemukan di Binance.")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Terjadi kesalahan: {str(e)}")
 
+# --- MAIN ---
 if __name__ == "__main__":
     print("🚀 Bot SMC Pro (Groq Edition) Starting...")
     threading.Thread(target=monitor_active_signals, daemon=True).start()
     threading.Thread(target=send_daily_report, daemon=True).start()
+    
+    # Jalankan polling Telegram
+    bot.send_message(CHAT_ID, "🚀 **Bot SMC Pro Online**", reply_markup=main_menu())
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
     
     while True:
