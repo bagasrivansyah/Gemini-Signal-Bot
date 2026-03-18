@@ -3,25 +3,25 @@ import requests
 import telebot
 import pandas as pd
 import pandas_ta as ta
-import google.generativeai as genai
+# Migrasi ke library terbaru sesuai rekomendasi log Google
+from google import genai 
 import time
 import json
 from datetime import datetime
 import threading
 
 # === CONFIGURATION (Railway Variables) ===
-# Menggunakan proteksi .get() agar tidak error jika variabel kosong
 TOKEN_TELEGRAM = os.getenv("TOKEN_TELEGRAM") or os.getenv("TOKEN TELEGRAM")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("KUNCI_API_GEMINI")
 CHAT_ID = os.getenv("CHAT_ID") or os.getenv("ID_CHAT_TELEGRAM")
 
-# Inisialisasi Gemini AI dengan Error Handling
+# Inisialisasi Gemini AI (Versi Terbaru google-genai)
 try:
     if not GEMINI_API_KEY:
         print("❌ ERROR: GEMINI_API_KEY tidak ditemukan!")
-    genai.configure(api_key=GEMINI_API_KEY)
-    model_ai = genai.GenerativeModel('gemini-1.5-flash')
-    print("✅ Gemini AI Terhubung.")
+    # Inisialisasi menggunakan Client baru
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    print("✅ Gemini AI Terhubung (Library Terbaru).")
 except Exception as e:
     print(f"❌ Gagal Inisialisasi AI: {e}")
 
@@ -32,14 +32,8 @@ if not TOKEN_TELEGRAM:
 
 bot = telebot.TeleBot(TOKEN_TELEGRAM)
 
-BINANCE_URLS = [
-    "https://api1.binance.com", 
-    "https://api2.binance.com", 
-    "https://api3.binance.com"
-]
-
+BINANCE_URLS = ["https://api1.binance.com", "https://api2.binance.com", "https://api3.binance.com"]
 active_signals = []
-daily_stats = {"total": 0, "tp_hit": 0, "sl_hit": 0}
 
 def call_binance_api(endpoint):
     for base_url in BINANCE_URLS:
@@ -70,7 +64,6 @@ def get_technical_data(symbol):
         vol_ratio = round(df['vol'].iloc[-1] / avg_vol, 2)
         
         trend = "UP" if df['ema_9'].iloc[-1] > df['ema_21'].iloc[-1] else "DOWN"
-        
         return {"trend": trend, "price": current_price, "vol_spike": f"{vol_ratio}x"}
     except:
         return {"trend": "neutral", "price": 0, "vol_spike": "1x"}
@@ -89,7 +82,11 @@ def get_ai_analysis(coin):
     """
     
     try:
-        response = model_ai.generate_content(prompt)
+        # Penyesuaian pemanggilan model ke sintaks google-genai
+        response = client.models.generate_content(
+            model='gemini-1.5-flash',
+            contents=prompt
+        )
         clean_json = response.text.strip().replace('```json', '').replace('```', '')
         return json.loads(clean_json)
     except Exception as e:
@@ -157,7 +154,6 @@ def run_scanner():
         res = call_binance_api("/api/v3/ticker/24hr")
         if not res: return
         
-        # Filter: Volume > 100k USDT
         targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 100000]
         targets = sorted(targets, key=lambda x: abs(float(x['priceChangePercent'])), reverse=True)[:15]
         
@@ -168,7 +164,7 @@ def run_scanner():
                 active_signals.append(sig)
                 send_signal_ui(sig)
                 found = True
-                time.sleep(1) # Delay minimal
+                time.sleep(1)
         
         if not found:
             bot.send_message(CHAT_ID, "🔍 Scan selesai: Market sedang sideways berat.")
@@ -204,7 +200,6 @@ if __name__ == "__main__":
 
     last_scan = 0
     while True:
-        # Auto scan setiap 1 jam
         if time.time() - last_scan > 3600:
             run_scanner()
             last_scan = time.time()
