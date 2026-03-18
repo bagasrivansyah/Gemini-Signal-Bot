@@ -16,13 +16,49 @@ CHAT_ID = os.getenv("CHAT_ID") or os.getenv("ID_CHAT_TELEGRAM")
 
 try:
     client = genai.Client(api_key=GEMINI_API_KEY)
-    print("✅ Gemini AI Terhubung (Mode Agresif Aktif).")
+    print("✅ Gemini AI Terhubung (ICT SMC Mode Active).")
 except Exception as e:
     print(f"❌ Gagal AI: {e}")
 
 bot = telebot.TeleBot(TOKEN_TELEGRAM)
 BINANCE_URLS = ["https://api1.binance.com", "https://api2.binance.com", "https://api3.binance.com"]
 active_signals = []
+
+# --- TEKNIKAL ICT SMC (DIADAPTASI DARI SCRIPT PRO) ---
+def get_htf_trend(symbol):
+    """Cek trend di timeframe 4H untuk konfirmasi arah besar"""
+    data = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=4h&limit=5")
+    if not data: return None
+    c4 = [float(x[4]) for x in data]
+    return "BULLISH" if c4[-1] > c4[-2] else "BEARISH"
+
+def get_ict_technical(symbol):
+    """Mendeteksi FVG, Displacement, dan Swing Points"""
+    try:
+        data = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=1h&limit=30")
+        if not data or len(data) < 10: return None
+        
+        c = [{"h": float(x[2]), "l": float(x[3]), "c": float(x[4]), "v": float(x[5])} for x in data]
+        avg_vol = sum([x['v'] for x in c[-10:]]) / 10
+        current_vol = c[-2]['v']
+        has_displacement = current_vol > (avg_vol * 1.5) # Volume lonjakan 1.5x
+
+        htf = get_htf_trend(symbol)
+        price = c[-1]['c']
+        
+        # Logika ICT: Fair Value Gap (FVG)
+        # Bullish FVG: Low candle saat ini > High candle 2 bar sebelumnya
+        if htf == "BULLISH" and c[-2]['l'] > c[-4]['h'] and has_displacement:
+            swing_low = min([x['l'] for x in c[-10:-1]])
+            return {"side": "LONG", "reason": "BULLISH FVG + Displacement + HTF", "sl": swing_low * 0.998, "price": price}
+            
+        # Bearish FVG: High candle saat ini < Low candle 2 bar sebelumnya
+        if htf == "BEARISH" and c[-2]['h'] < c[-4]['l'] and has_displacement:
+            swing_high = max([x['h'] for x in c[-10:-1]])
+            return {"side": "SHORT", "reason": "BEARISH FVG + Displacement + HTF", "sl": swing_high * 1.002, "price": price}
+            
+        return None
+    except: return None
 
 def call_binance_api(endpoint):
     for base_url in BINANCE_URLS:
@@ -33,43 +69,22 @@ def call_binance_api(endpoint):
         except: continue
     return None
 
-def get_technical_data(symbol):
-    try:
-        # Ambil data 15m & 1h (4h opsional agar lebih cepat muncul sinyal)
-        d15m = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=15m&limit=50")
-        d1h = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=1h&limit=50")
-        
-        if not d15m or not d1h: return None
-        
-        df15 = pd.DataFrame(d15m, columns=['ts', 'o', 'h', 'l', 'c', 'v', 'ct', 'qv', 'nt', 'tbv', 'tqv', 'i'])
-        df15['close'] = df15['c'].astype(float)
-        df15['ema_9'] = ta.ema(df15['close'], length=9)
-        df15['ema_21'] = ta.ema(df15['close'], length=21)
-        
-        ema21_1h = ta.ema(pd.Series([float(x[4]) for x in d1h]), length=21).iloc[-1]
-        current_price = df15['close'].iloc[-1]
-        
-        # LOGIKA: Fokus pada 15m & 1h agar sinyal lebih sering muncul
-        is_bull = (current_price > ema21_1h) or (df15['ema_9'].iloc[-1] > df15['ema_21'].iloc[-1])
-        is_bear = (current_price < ema21_1h) or (df15['ema_9'].iloc[-1] < df15['ema_21'].iloc[-1])
-        
-        trend = "UP" if is_bull else "DOWN" if is_bear else "SIDELINES"
-        
-        vol_ratio = round(float(df15['v'].iloc[-1]) / df15['v'].astype(float).iloc[-21:-1].mean(), 2)
-        
-        return {"trend": trend, "price": current_price, "vol_spike": f"{vol_ratio}x"}
-    except: return None
-
 def get_ai_analysis(coin):
-    tech = get_technical_data(coin['symbol'])
-    if not tech or tech['trend'] == "SIDELINES": return None
+    # Menggunakan teknikal ICT SMC
+    ict = get_ict_technical(coin['symbol'])
+    if not ict: return None
     
-    # Prompt lebih to-the-point agar JSON tidak error
-    prompt = f"Expert Scalper: Analyze {coin['symbol']} at {tech['price']}. Trend: {tech['trend']}. Vol: {tech['vol_spike']}. Give 20x Leverage signal. Return ONLY JSON: {{\"symbol\": \"{coin['symbol']}\", \"signal\": \"{tech['trend']}\", \"entry\": {tech['price']}, \"tp1\": 0, \"tp2\": 0, \"tp3\": 0, \"sl\": 0, \"reason\": \"Trend alignment\"}}"
+    # AI bertugas menghitung TP dinamis berdasarkan Risk:Reward dari SL ICT
+    prompt = f"""
+    Expert ICT SMC Trader: Analyze {coin['symbol']}.
+    Current Price: {ict['price']}, Side: {ict['side']}, SL: {ict['sl']}, Reason: {ict['reason']}.
+    Requirement: 20x Leverage. Calculate TP1 (RR 1:1), TP2 (RR 1:2), TP3 (RR 1:3).
+    Return ONLY JSON:
+    {{"symbol": "{coin['symbol']}", "signal": "{ict['side']}", "entry": {ict['price']}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": {ict['sl']}, "reason": "{ict['reason']}"}}
+    """
     
     try:
         response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
-        # Pembersihan JSON yang lebih kuat
         clean_text = response.text.strip().replace('```json', '').replace('```', '').split('{')[-1].split('}')[0]
         return json.loads('{' + clean_text + '}')
     except: return None
@@ -78,31 +93,34 @@ def send_signal_ui(sig_data):
     if not sig_data: return
     symbol = sig_data['symbol']
     chart_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}PERP"
+    arrow = "▲" if sig_data['signal'] == "LONG" else "▼"
     
     msg = (
-        f"🔥 **FAST SCALPING SIGNAL** 🔥\n"
+        f"🏛️ **ICT SMC PRO SIGNAL** 🏛️\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🪙 **Pair:** #{symbol}\n"
-        f"📈 **Type:** {sig_data['signal']} | 20x\n"
+        f"🪙 **Pair:** #{symbol} | `20x Cross`\n"
+        f"📈 **Side:** {sig_data['signal']} {arrow}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 **Entry:** {sig_data['entry']}\n"
-        f"✅ **TP1:** {sig_data.get('tp1', 0)}\n"
-        f"🛑 **SL:** {sig_data.get('sl', 0)}\n"
+        f"💎 **Entry:** `{sig_data['entry']}`\n"
+        f"🎯 **TP 1:** `{sig_data.get('tp1', 0)}` (RR 1:1)\n"
+        f"🔥 **TP 2:** `{sig_data.get('tp2', 0)}` (RR 1:2)\n"
+        f"🚀 **TP 3:** `{sig_data.get('tp3', 0)}` (RR 1:3)\n"
+        f"🛑 **Stop Loss:** `{sig_data.get('sl', 0)}`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"💡 **AI Reason:** _{sig_data.get('reason', 'N/A')}_\n"
-        f"🔗 [LIHAT CHART]({chart_url})\n"
+        f"💡 **Logic:** `{sig_data.get('reason', 'N/A')}`\n"
+        f"🔗 [VIEW CHART]({chart_url})\n"
         f"⚠️ *Bagas Rivansyah: Gunakan RM!*"
     )
     bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
 
 def run_scanner():
-    print("🔍 Scanning Market...")
+    print("🔍 ICT Scanning Market...")
     try:
         res = call_binance_api("/api/v3/ticker/24hr")
         if not res: return
         
-        # Filter volume diturunkan ke 20.000 agar lebih banyak koin terdeteksi
-        targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 20000]
+        # Volume minimal 500.000 agar lebih valid untuk ICT
+        targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 500000]
         targets = sorted(targets, key=lambda x: abs(float(x['priceChangePercent'])), reverse=True)[:15]
         
         found = False
@@ -112,17 +130,17 @@ def run_scanner():
                 active_signals.append(sig)
                 send_signal_ui(sig)
                 found = True
-        if not found: bot.send_message(CHAT_ID, "🔍 Selesai: Momentum belum cukup kuat.")
+        if not found: bot.send_message(CHAT_ID, "🔍 Selesai: Setup ICT (FVG) belum ditemukan.")
     except: pass
 
 @bot.message_handler(func=lambda message: message.text == '🔍 Scan Market Sekarang')
 def manual_scan(message):
-    bot.send_message(CHAT_ID, "🚀 Mencari momentum scalping...")
+    bot.send_message(CHAT_ID, "🚀 Mencari Setup ICT SMC Pro...")
     run_scanner()
 
 @bot.message_handler(func=lambda message: message.text == '📊 Status Bot')
 def bot_status(message):
-    bot.send_message(CHAT_ID, f"🤖 **Status:** Aktif\n📈 Sinyal Aktif: {len(active_signals)}\n👤 Developer: Bagas Rivansyah", parse_mode="Markdown")
+    bot.send_message(CHAT_ID, f"🤖 **SMC System:** Aktif\n🎯 **Mode:** ICT FVG + Displacement\n📈 Sinyal Aktif: {len(active_signals)}\n👤 Developer: Bagas Rivansyah", parse_mode="Markdown")
 
 def main_keyboard():
     markup = telebot.types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
@@ -130,12 +148,12 @@ def main_keyboard():
     return markup
 
 if __name__ == "__main__":
-    try: bot.send_message(CHAT_ID, "🚀 **Bot Online!**", reply_markup=main_keyboard())
+    try: bot.send_message(CHAT_ID, "🏛️ **SMC Trading System Online!**", reply_markup=main_keyboard())
     except: pass
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
     last_scan = 0
     while True:
-        if time.time() - last_scan > 600:
+        if time.time() - last_scan > 900: # Scan otomatis setiap 15 menit
             run_scanner()
             last_scan = time.time()
         time.sleep(10)
