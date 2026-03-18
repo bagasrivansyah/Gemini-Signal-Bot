@@ -21,7 +21,8 @@ except Exception as e:
     print(f"❌ Gagal AI: {e}")
 
 bot = telebot.TeleBot(TOKEN_TELEGRAM)
-BINANCE_URLS = ["https://api1.binance.com", "https://api2.binance.com", "https://api3.binance.com"]
+# Perbaikan: Urutan URL Binance dioptimalkan
+BINANCE_URLS = ["https://api.binance.com", "https://api1.binance.com", "https://api2.binance.com", "https://api3.binance.com"]
 active_signals = []
 
 # --- TEKNIKAL ICT SMC ---
@@ -41,7 +42,8 @@ def get_ict_technical(symbol):
         c = [{"h": float(x[2]), "l": float(x[3]), "c": float(x[4]), "v": float(x[5])} for x in data]
         avg_vol = sum([x['v'] for x in c[-10:]]) / 10
         current_vol = c[-2]['v']
-        has_displacement = current_vol > (avg_vol * 1.5) 
+        # Optimasi: Displacement 1.3x agar lebih sensitif di market volatile
+        has_displacement = current_vol > (avg_vol * 1.3) 
 
         htf = get_htf_trend(symbol)
         price = c[-1]['c']
@@ -59,10 +61,15 @@ def get_ict_technical(symbol):
     except: return None
 
 def call_binance_api(endpoint):
+    # Perbaikan: Menambahkan headers agar server cloud tidak diblokir Binance
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Content-Type': 'application/json'
+    }
     for base_url in BINANCE_URLS:
         try:
             url = f"{base_url}{endpoint}"
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, headers=headers, timeout=10)
             if response.status_code == 200: return response.json()
         except: continue
     return None
@@ -109,22 +116,21 @@ def send_signal_ui(sig_data):
     )
     bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
 
-# --- UPDATED SCANNER WITH LOGGING ---
 def run_scanner():
     timestamp = datetime.now().strftime('%H:%M:%S')
     print(f"🔍 [{timestamp}] Memulai pemindaian ICT SMC...")
     try:
         res = call_binance_api("/api/v3/ticker/24hr")
         if not res: 
-            print("⚠️ Gagal mengambil data Binance.")
+            print(f"⚠️ [{timestamp}] Gagal mengambil data Binance. Mencoba endpoint lain...")
             return
         
-        targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 500000]
+        # Volume minimal 300.000 agar lebih aktif di market volatile
+        targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 300000]
         targets = sorted(targets, key=lambda x: abs(float(x['priceChangePercent'])), reverse=True)[:15]
         
         found = False
         for t in targets:
-            # Log deteksi per koin untuk debugging Railway
             print(f"🧐 Mengecek: {t['symbol']} | Volume: {float(t['quoteVolume']):,.0f}")
             
             sig = get_ai_analysis(t)
@@ -135,7 +141,7 @@ def run_scanner():
                 print(f"✅ Sinyal Ditemukan: {t['symbol']}")
                 
         if not found: 
-            print("🌑 Scan Selesai: Tidak ada koin memenuhi kriteria FVG.")
+            print(f"🌑 [{timestamp}] Scan Selesai: Belum ada setup FVG.")
             bot.send_message(CHAT_ID, "🔍 Selesai: Setup ICT (FVG) belum ditemukan.")
     except Exception as e:
         print(f"❌ Error saat scan: {e}")
@@ -156,12 +162,16 @@ def main_keyboard():
 
 if __name__ == "__main__":
     try: 
-        bot.remove_webhook() # Menghindari Error 409 Conflict
-        time.sleep(1)
+        # Perbaikan: Tambahkan delay setelah remove_webhook untuk stabilitas
+        bot.remove_webhook()
+        time.sleep(2) 
         bot.send_message(CHAT_ID, "🏛️ **SMC Trading System Online!**", reply_markup=main_keyboard())
-    except: pass
+        print("✅ Bot Bagas Rivansyah Ready.")
+    except Exception as e:
+        print(f"⚠️ Gagal inisialisasi: {e}")
     
-    threading.Thread(target=bot.infinity_polling, daemon=True).start()
+    # Perbaikan: Tambahkan timeout pada polling
+    threading.Thread(target=bot.infinity_polling, kwargs={'timeout': 20}, daemon=True).start()
     
     last_scan = 0
     while True:
