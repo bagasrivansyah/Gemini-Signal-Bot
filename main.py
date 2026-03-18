@@ -3,7 +3,7 @@ import requests
 import telebot
 import pandas as pd
 import pandas_ta as ta
-from groq import Groq
+import google.generativeai as genai
 import time
 import json
 from datetime import datetime
@@ -11,11 +11,14 @@ import threading
 
 # === CONFIGURATION (Railway Variables) ===
 TOKEN_TELEGRAM = os.getenv("TELEGRAM_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") # Tambahkan kunci ini di Railway
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# Inisialisasi Gemini AI
+genai.configure(api_key=GEMINI_API_KEY)
+model_ai = genai.GenerativeModel('gemini-1.5-flash')
+
 bot = telebot.TeleBot(TOKEN_TELEGRAM)
-client = Groq(api_key=GROQ_API_KEY)
 
 BINANCE_URLS = [
     "https://api1.binance.com", 
@@ -42,26 +45,25 @@ def call_binance_api(endpoint):
 
 def get_technical_data(symbol):
     try:
-        # Mengambil data 1 jam untuk melihat tren (EMA & Volume)
+        # Mengambil data 1 jam untuk deteksi momentum murni
         data = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=1h&limit=50")
         if not data: return {"trend": "neutral", "price": 0, "vol_spike": "1x"}
         
         df = pd.DataFrame(data, columns=['ts', 'o', 'h', 'l', 'c', 'v', 'ct', 'qv', 'nt', 'tbv', 'tqv', 'i'])
-        df['close'] = df['close_price'] = df['c'].astype(float)
+        df['close'] = df['c'].astype(float)
         df['vol'] = df['v'].astype(float)
         
-        # PERUBAHAN TEKNIKAL: Menggunakan EMA 9 & 21
+        # TEKNIKAL: EMA 9 & 21 (Trend Following)
         df['ema_fast'] = ta.ema(df['close'], length=9)
         df['ema_slow'] = ta.ema(df['close'], length=21)
         
         current_price = df['close'].iloc[-1]
         
-        # Deteksi Volume Spike (Volume saat ini vs rata-rata 20 jam)
+        # Deteksi Volume Spike
         avg_vol = df['vol'].iloc[-21:-1].mean()
         current_vol = df['vol'].iloc[-1]
         vol_ratio = round(current_vol / avg_vol, 2)
         
-        # Logika Trend
         is_bullish = df['ema_fast'].iloc[-1] > df['ema_slow'].iloc[-1]
         trend_status = "UP" if is_bullish else "DOWN"
         
@@ -77,30 +79,38 @@ def get_ai_analysis(coin, condition):
     tech = get_technical_data(coin['symbol'])
     if tech['price'] == 0: return None
     
-    # PROMPT: Fokus murni pada Momentum & EMA Trend
+    # PROMPT KHUSUS GEMINI: Fokus Teknikal Momentum
     prompt = f"""
-    BERTINDAKLAH SEBAGAI TRADER MOMENTUM.
+    Act as an expert Momentum Trader. 
     PAIR: {coin['symbol']} | PRICE: {tech['price']} | TREND: {tech['trend']} | VOL SPIKE: {tech['vol_spike']}
     24h Change: {coin['priceChangePercent']}% | LEVERAGE: 20x
     
-    Tugas: Wajib berikan sinyal LONG atau SHORT.
-    - Jika TREND UP dan VOL SPIKE > 1.1x: Prioritas LONG.
-    - Jika TREND DOWN dan VOL SPIKE > 1.1x: Prioritas SHORT.
-    Hitung TP1 (ROI 20%), TP2 (ROI 50%), TP3 (ROI 100%) dan SL (ROI -50%) secara presisi.
+    Task: Provide a LONG or SHORT signal.
+    - If TREND is UP and VOL SPIKE > 1.1x: Recommend LONG.
+    - If TREND is DOWN and VOL SPIKE > 1.1x: Recommend SHORT.
+    Calculations: TP1 (20% ROI), TP2 (50% ROI), TP3 (100% ROI), and SL (-50% ROI) for 20x Leverage.
     
-    OUTPUT WAJIB JSON:
-    {{"symbol": "{coin['symbol']}", "signal": "LONG/SHORT", "entry": {tech['price']}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "data_info": "{tech['vol_spike']}", "reason": "Momentum Technical"}}
+    OUTPUT MUST BE RAW JSON ONLY:
+    {{
+        "symbol": "{coin['symbol']}",
+        "signal": "LONG/SHORT",
+        "entry": {tech['price']},
+        "tp1": 0,
+        "tp2": 0,
+        "tp3": 0,
+        "sl": 0,
+        "data_info": "{tech['vol_spike']}",
+        "reason": "Expert technical reason here"
+    }}
     """
     
     try:
-        completion = client.chat.completions.create(
-            model="llama3-70b-8192",
-            messages=[{"role": "system", "content": "You are a professional trader. Always output valid JSON."},
-                      {"role": "user", "content": prompt}],
-            response_format={ "type": "json_object" }
-        )
-        return json.loads(completion.choices[0].message.content)
-    except:
+        response = model_ai.generate_content(prompt)
+        # Menghapus blok kode markdown jika ada
+        text_response = response.text.strip().replace('```json', '').replace('```', '')
+        return json.loads(text_response)
+    except Exception as e:
+        print(f"Gemini Error: {e}")
         return None
 
 def send_signal_ui(sig_data):
@@ -108,9 +118,9 @@ def send_signal_ui(sig_data):
     symbol = sig_data['symbol']
     chart_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}PERP"
     
-    # Tetap menggunakan format visual Bagas Rivansyah
+    # Format visual tetap Bagas Rivansyah
     msg = (
-        f"🔥 **NEW FUTURES SIGNAL** 🔥\n"
+        f"🔥 **NEW FUTURES SIGNAL (GEMINI)** 🔥\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🪙 **Pair:** #{symbol}\n"
         f"📈 **Type:** {sig_data['signal']} | 20x (Cross)\n"
@@ -158,15 +168,16 @@ def check_monitoring():
 
 def run_scanner():
     global daily_stats
-    print("Scanning Market...")
+    print("Gemini Scanning...")
     try:
         res = call_binance_api("/api/v3/ticker/24hr")
         if not res: return
         
+        # Filter koin volatil dengan Volume > 100k
         usdt_pairs = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 100000]
         sorted_c = sorted(usdt_pairs, key=lambda x: abs(float(x['priceChangePercent'])), reverse=True)
         
-        targets = sorted_c[:20]
+        targets = sorted_c[:15] # 15 koin target
         
         found_any = False
         for t in targets:
@@ -176,7 +187,7 @@ def run_scanner():
                 send_signal_ui(sig)
                 daily_stats["total"] += 1
                 found_any = True
-                time.sleep(1)
+                time.sleep(2) # Delay untuk free tier Gemini
         
         if not found_any:
             bot.send_message(CHAT_ID, "🔍 Scan selesai: Market sedang sideways berat.")
@@ -190,12 +201,12 @@ def main_keyboard():
 
 @bot.message_handler(func=lambda message: message.text == '🔍 Scan Market Sekarang')
 def manual_scan(message):
-    bot.send_message(CHAT_ID, "🚀 Memulai pemindaian teknikal (Target 20 koin)...")
+    bot.send_message(CHAT_ID, "🚀 Gemini AI sedang memindai momentum market...")
     run_scanner()
 
 @bot.message_handler(func=lambda message: message.text == '📊 Status Bot')
 def bot_status(message):
-    msg = (f"🤖 **Status Bot:** Aktif\n"
+    msg = (f"🤖 **Status Bot:** Aktif (Gemini 1.5 Flash)\n"
            f"📈 Sinyal Aktif: {len(active_signals)}\n"
            f"💰 Volume Filter: > 100,000 USDT\n"
            f"🎯 Strategi: EMA Cross & Volume Spike")
@@ -203,7 +214,7 @@ def bot_status(message):
 
 if __name__ == "__main__":
     try:
-        bot.send_message(CHAT_ID, f"🚀 **Bot AI Bagas Rivansyah Online!**\nSistem monitoring teknikal aktif.", reply_markup=main_keyboard())
+        bot.send_message(CHAT_ID, f"🚀 **Bot Gemini Bagas Rivansyah Online!**\nMonitoring momentum aktif.", reply_markup=main_keyboard())
     except: pass
     
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
