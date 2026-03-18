@@ -1,4 +1,4 @@
-import os # Perbaikan: 'import' harus huruf kecil semua
+import os
 import requests
 import telebot
 import pandas as pd
@@ -22,7 +22,6 @@ except Exception as e:
     print(f"❌ Gagal AI: {e}")
 
 bot = telebot.TeleBot(TOKEN_TELEGRAM)
-active_signals = []
 
 # --- TEKNIKAL ICT SMC ---
 def get_htf_trend(symbol):
@@ -56,12 +55,12 @@ def get_ict_technical(symbol):
     except: return None
 
 def call_binance_api(endpoint):
-    # Menambah list endpoint untuk menghindari blokir IP
+    # Mengutamakan api3 dan vision karena paling stabil di region non-US
     endpoints = [
-        "https://api.binance.com", 
+        "https://api3.binance.com",
+        "https://data-api.binance.vision",
         "https://api1.binance.com", 
-        "https://api2.binance.com",
-        "https://api3.binance.com"
+        "https://api.binance.com"
     ]
     headers = {'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json'}
     for base_url in endpoints:
@@ -71,44 +70,41 @@ def call_binance_api(endpoint):
         except: continue
     return None
 
-def get_ai_analysis(coin, custom_prompt=None):
-    ict = get_ict_technical(coin['symbol'])
+def get_ai_analysis(coin_data, custom_prompt=None):
+    symbol = coin_data['symbol']
+    ict = get_ict_technical(symbol)
+    price = coin_data.get('lastPrice') or coin_data.get('price')
     
     if not custom_prompt:
         if not ict: return None
         prompt = f"""
-        Expert ICT SMC Trader: Analyze {coin['symbol']}.
-        Current Price: {ict['price']}, Side: {ict['side']}, SL: {ict['sl']}, Reason: {ict['reason']}.
+        Expert ICT SMC Trader: Analyze {symbol}.
+        Current Price: {price}, Side: {ict['side']}, SL: {ict['sl']}, Reason: {ict['reason']}.
         Requirement: 20x Leverage. TP1 (RR 1:1), TP2 (RR 1:2), TP3 (RR 1:3).
         Return ONLY JSON format:
-        {{"symbol": "{coin['symbol']}", "signal": "{ict['side']}", "entry": {ict['price']}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": {ict['sl']}, "reason": "{ict['reason']}"}}
+        {{"symbol": "{symbol}", "signal": "{ict['side']}", "entry": {price}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": {ict['sl']}, "reason": "{ict['reason']}"}}
         """
     else:
         prompt = custom_prompt
 
     try:
-        # Nama model murni 'gemini-1.5-flash' untuk menghindari 404
         response = client.models.generate_content(
             model='gemini-1.5-flash', 
             contents=prompt,
             config=types.GenerateContentConfig(
-                response_mime_type='application/json'
+                response_mime_type='application/json' # Memaksa output JSON murni
             )
         )
         
-        text = response.text.strip()
-        start = text.find('{')
-        end = text.rfind('}') + 1
-        if start != -1 and end != 0:
-            return json.loads(text[start:end])
-        return None
+        # Ekstraksi JSON yang lebih aman dari teks respon
+        return json.loads(response.text.strip())
     except Exception as e:
-        print(f"❌ Gemini Error: {e}")
+        print(f"❌ Gemini Error ({symbol}): {e}")
         return None
 
 def send_signal_ui(sig_data):
     if not sig_data: return
-    symbol = sig_data['symbol']
+    symbol = sig_data.get('symbol', 'UNKNOWN')
     chart_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}PERP"
     side = str(sig_data.get('signal', '')).upper()
     arrow = "▲" if "LONG" in side else "▼"
@@ -138,14 +134,14 @@ def run_scanner():
         res = call_binance_api("/api/v3/ticker/24hr")
         if not res: return
         
-        all_targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 500000]
-        all_targets = sorted(all_targets, key=lambda x: float(x['quoteVolume']), reverse=True)[:50]
+        all_targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 1000000]
+        all_targets = sorted(all_targets, key=lambda x: float(x['quoteVolume']), reverse=True)[:30]
         
         for t in all_targets:
             sig = get_ai_analysis(t)
             if sig and 'signal' in sig:
                 send_signal_ui(sig)
-                time.sleep(1) 
+                time.sleep(2) # Jeda lebih lama agar API tidak panas
     except Exception as e:
         print(f"❌ Error scan: {e}")
 
@@ -162,7 +158,7 @@ def manual_check_coin(message):
         coin_raw = text_split[1].upper().replace("USDT", "")
         symbol = f"{coin_raw}USDT"
         
-        bot.send_message(CHAT_ID, f"🔄 Menganalisis {symbol}...")
+        bot.send_message(CHAT_ID, f"🔄 Menganalisis {symbol} dengan AI ICT SMC...")
 
         ticker = call_binance_api(f"/api/v3/ticker/24hr?symbol={symbol}")
         if not ticker or 'lastPrice' not in ticker:
@@ -170,16 +166,13 @@ def manual_check_coin(message):
             return
 
         price = ticker['lastPrice']
-        prompt_cek = f"""
-        Analyze {symbol} price {price} with ICT SMC. 
-        Give bias (LONG/SHORT), Entry, SL, and 3 TPs for 20x leverage.
-        Return ONLY JSON:
-        {{"symbol": "{symbol}", "signal": "LONG", "entry": {price}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "reason": "AI Analysis"}}
-        """
+        prompt_cek = f"Analyze {symbol} price {price} with ICT SMC. Give bias, Entry, SL, and 3 TPs for 20x leverage. Return ONLY JSON."
         
         sig = get_ai_analysis(ticker, custom_prompt=prompt_cek)
-        if sig: send_signal_ui(sig)
-        else: bot.send_message(CHAT_ID, "⚠️ Gagal mendapatkan analisis AI.")
+        if sig: 
+            send_signal_ui(sig)
+        else: 
+            bot.send_message(CHAT_ID, "⚠️ Gagal mendapatkan analisis AI. Coba koin lain.")
     except Exception as e:
         bot.send_message(CHAT_ID, f"⚠️ Error: {e}")
 
@@ -190,7 +183,7 @@ def manual_scan(message):
 
 @bot.message_handler(func=lambda m: m.text == '📊 Status Bot')
 def bot_status(message):
-    bot.send_message(CHAT_ID, f"🤖 **SMC System:** Aktif\n👤 Developer: Bagas Rivansyah", parse_mode="Markdown")
+    bot.send_message(CHAT_ID, f"🤖 **SMC System:** Aktif (Region Belgium/Singapore)\n👤 Developer: Bagas Rivansyah", parse_mode="Markdown")
 
 def main_keyboard():
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -198,9 +191,8 @@ def main_keyboard():
     return markup
 
 if __name__ == "__main__":
-    # Kirim pesan status saat bot mulai
     try:
-        bot.send_message(CHAT_ID, "🏛️ **SMC System Online (Fix 404 & Import)!**", reply_markup=main_keyboard())
+        bot.send_message(CHAT_ID, "🏛️ **SMC System Online (Fix 404 & Region Sync)!**", reply_markup=main_keyboard())
         print("✅ Bot Bagas Rivansyah Ready.")
     except: pass
     
@@ -208,7 +200,7 @@ if __name__ == "__main__":
     
     last_scan = 0
     while True:
-        if time.time() - last_scan > 900: 
+        if time.time() - last_scan > 1800: # Scan tiap 30 menit biar lebih aman
             run_scanner()
             last_scan = time.time()
         time.sleep(10)
