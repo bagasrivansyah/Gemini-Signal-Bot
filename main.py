@@ -15,13 +15,10 @@ TOKEN_TELEGRAM = os.getenv("TOKEN_TELEGRAM") or os.getenv("TOKEN TELEGRAM")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("KUNCI_API_GEMINI")
 CHAT_ID = os.getenv("CHAT_ID") or os.getenv("ID_CHAT_TELEGRAM")
 
-# --- INISIALISASI CLIENT STABLE ---
+# --- INISIALISASI CLIENT (STABIL TANPA PAKSAAN VERSI) ---
 try:
-    # Menggunakan v1 (Stable) untuk menghindari bug 404 pada v1beta
-    client = genai.Client(
-        api_key=GEMINI_API_KEY,
-        http_options={'api_version': 'v1'} 
-    )
+    # Inisialisasi standar terbukti paling berhasil di AI Studio kamu
+    client = genai.Client(api_key=GEMINI_API_KEY)
     print("✅ Gemini AI System Connected (Stable Mode).")
 except Exception as e:
     print(f"❌ Gagal AI: {e}")
@@ -60,39 +57,41 @@ def get_ict_technical(symbol):
         return None
     except: return None
 
-# --- AI ANALYSIS (ANTI-ERROR FALLBACK) ---
+# --- AI ANALYSIS (FIXED FOR RAILWAY STABILITY) ---
 def get_ai_analysis(coin_data, custom_prompt=None):
     symbol = coin_data['symbol']
     ict = get_ict_technical(symbol)
     price = coin_data.get('lastPrice') or coin_data.get('price')
     
+    # Prompt diperkuat agar output selalu JSON mentah
     prompt = custom_prompt or f"""
     Role: Expert ICT SMC Trader. Pair: {symbol} at {price}.
     Bias: {ict['side'] if ict else 'Neutral'}, Logic: {ict['reason'] if ict else 'Price Action'}.
-    Return ONLY JSON:
+    Return ONLY JSON (no markdown tags):
     {{"symbol": "{symbol}", "signal": "LONG/SHORT", "entry": {price}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "reason": "AI Logic"}}
     """
 
-    # Percobaan 1: Menggunakan Mode JSON Formal (Bisa kena error 400 di bbrp region)
+    # Percobaan 1: Tanpa Config JSON (Menghindari Error 400 Invalid Argument)
     try:
         response = client.models.generate_content(
             model='gemini-1.5-flash', 
-            contents=prompt,
-            config=types.GenerateContentConfig(response_mime_type='application/json')
+            contents=prompt
         )
         if response.text:
-            return json.loads(response.text.strip())
+            # Membersihkan tag markdown jika AI bandel
+            clean_json = response.text.strip().replace('```json', '').replace('```', '')
+            return json.loads(clean_json)
     except Exception as e:
-        print(f"⚠️ Jalur JSON Error, mencoba jalur Fallback untuk {symbol}...")
-
-    # Percobaan 2: Jalur Fallback (Tanpa config JSON, kita bersihkan manual)
+        print(f"⚠️ Mencoba Jalur Alternatif untuk {symbol}...")
+        
+    # Percobaan 2: Jalur Terakhir (Sangat Simpel)
     try:
         response = client.models.generate_content(
             model='gemini-1.5-flash',
-            contents=prompt + " (Output must be RAW JSON only)"
+            contents=prompt + " (Raw string output only)"
         )
         if response.text:
-            clean_json = response.text.replace('```json', '').replace('```', '').strip()
+            clean_json = response.text.strip().replace('```json', '').replace('```', '')
             return json.loads(clean_json)
     except Exception as e2:
         print(f"❌ Gemini Gagal Total ({symbol}): {e2}")
@@ -122,7 +121,7 @@ def run_scanner():
     res = call_binance_api("/api/v3/ticker/24hr")
     if not res: return
     
-    # Ambil 10 koin dengan volume tertinggi
+    # Filter volume > 5jt USDT dan koin USDT saja
     targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 5000000]
     targets = sorted(targets, key=lambda x: float(x['quoteVolume']), reverse=True)[:10]
     
@@ -130,21 +129,28 @@ def run_scanner():
         sig = get_ai_analysis(t)
         if sig and sig.get('signal') in ['LONG', 'SHORT']:
             send_signal_ui(sig)
-            time.sleep(5) # Jeda antar koin agar tidak spam
+            time.sleep(5) # Jeda 5 detik antar koin
 
 @bot.message_handler(commands=['cek'])
 def manual_check(message):
     try:
-        sym = message.text.split()[1].upper()
+        parts = message.text.split()
+        if len(parts) < 2:
+            bot.send_message(CHAT_ID, "Gunakan: /cek BTC")
+            return
+            
+        sym = parts[1].upper()
         sym = f"{sym}USDT" if "USDT" not in sym else sym
         bot.send_message(CHAT_ID, f"🔄 Membedah {sym} dengan AI Bagas Rivansyah...")
+        
         res = call_binance_api(f"/api/v3/ticker/24hr?symbol={sym}")
         if res:
             sig = get_ai_analysis(res)
             if sig: send_signal_ui(sig)
             else: bot.send_message(CHAT_ID, "⚠️ AI tidak menemukan setup valid.")
         else: bot.send_message(CHAT_ID, "❌ Koin tidak ditemukan.")
-    except: bot.send_message(CHAT_ID, "Gunakan: /cek BTC")
+    except Exception as e:
+        bot.send_message(CHAT_ID, f"❌ Error: {e}")
 
 if __name__ == "__main__":
     try:
