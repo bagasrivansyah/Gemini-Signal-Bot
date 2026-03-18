@@ -76,22 +76,38 @@ def call_binance_api(endpoint):
         except: continue
     return None
 
-def get_ai_analysis(coin):
+def get_ai_analysis(coin, custom_prompt=None):
+    """Fungsi analisis Gemini yang diperbaiki untuk SDK terbaru"""
     ict = get_ict_technical(coin['symbol'])
-    if not ict: return None
     
-    prompt = f"""
-    Expert ICT SMC Trader: Analyze {coin['symbol']}.
-    Current Price: {ict['price']}, Side: {ict['side']}, SL: {ict['sl']}, Reason: {ict['reason']}.
-    Requirement: 20x Leverage. Calculate TP1 (RR 1:1), TP2 (RR 1:2), TP3 (RR 1:3).
-    Return ONLY JSON:
-    {{"symbol": "{coin['symbol']}", "signal": "{ict['side']}", "entry": {ict['price']}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": {ict['sl']}, "reason": "{ict['reason']}"}}
-    """
+    # Gunakan prompt standar jika tidak ada prompt custom
+    if not custom_prompt:
+        if not ict: return None
+        prompt = f"""
+        Expert ICT SMC Trader: Analyze {coin['symbol']}.
+        Current Price: {ict['price']}, Side: {ict['side']}, SL: {ict['sl']}, Reason: {ict['reason']}.
+        Requirement: 20x Leverage. Calculate TP1 (RR 1:1), TP2 (RR 1:2), TP3 (RR 1:3).
+        Return ONLY JSON:
+        {{"symbol": "{coin['symbol']}", "signal": "{ict['side']}", "entry": {ict['price']}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": {ict['sl']}, "reason": "{ict['reason']}"}}
+        """
+    else:
+        prompt = custom_prompt
+
     try:
+        # Perbaikan: Langsung gunakan nama model tanpa 'models/' untuk menghindari 404
         response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
-        clean_text = response.text.strip().replace('```json', '').replace('```', '').split('{')[-1].split('}')[0]
-        return json.loads('{' + clean_text + '}')
-    except: return None
+        
+        # Logika pembersihan JSON yang lebih kuat
+        text = response.text.strip()
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0].strip()
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0].strip()
+            
+        return json.loads(text)
+    except Exception as e:
+        print(f"❌ Gemini Error: {e}")
+        return None
 
 def send_signal_ui(sig_data):
     if not sig_data: return
@@ -151,38 +167,34 @@ def manual_check_coin(message):
     try:
         text_split = message.text.split()
         if len(text_split) < 2:
-            bot.reply_to(message, "❌ Format salah. Gunakan: `/cek BTC` atau `/cek SOLUSDT`", parse_mode="Markdown")
+            bot.reply_to(message, "❌ Format salah. Gunakan: `/cek BTC`", parse_mode="Markdown")
             return
         
         coin_input = text_split[1].upper()
         symbol = coin_input if coin_input.endswith("USDT") else f"{coin_input}USDT"
 
-        bot.send_message(CHAT_ID, f"🔄 Sedang menganalisis {symbol} dengan AI ICT SMC...")
+        bot.send_message(CHAT_ID, f"🔄 Menganalisis {symbol}...")
 
         ticker_data = call_binance_api(f"/api/v3/ticker/24hr?symbol={symbol}")
         if not ticker_data:
-            bot.send_message(CHAT_ID, f"❌ Koin {symbol} tidak ditemukan di Binance.")
+            bot.send_message(CHAT_ID, f"❌ Koin {symbol} tidak ditemukan.")
             return
 
-        # Coba analisa dengan logika ICT FVG
-        sig = get_ai_analysis(ticker_data)
+        # Buat prompt manual untuk instruksi AI yang lebih jelas
+        price_now = ticker_data['lastPrice']
+        prompt_cek = f"""
+        Analyze {symbol} price {price_now} using ICT SMC. 
+        Give bias (LONG/SHORT/WAIT), Entry, SL, and 3 TPs for 20x leverage.
+        Return ONLY JSON:
+        {{"symbol": "{symbol}", "signal": "LONG", "entry": {price_now}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "reason": "AI Insight"}}
+        """
+        
+        sig = get_ai_analysis(ticker_data, custom_prompt=prompt_cek)
         
         if sig:
             send_signal_ui(sig)
         else:
-            # Jika FVG tidak ada, minta AI prediksi berdasarkan harga saat ini
-            price_now = ticker_data['lastPrice']
-            prompt_umum = f"""
-            As an Expert ICT SMC Trader, analyze {symbol} at price {price_now}. 
-            No clear FVG found, but give your best bias (LONG/SHORT/WAIT) based on current price action.
-            Calculate TP (RR 1:2) and SL for 20x leverage.
-            Return ONLY JSON: 
-            {{"symbol": "{symbol}", "signal": "TYPE", "entry": {price_now}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "reason": "AI Insight"}}
-            """
-            response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt_umum)
-            clean_text = response.text.strip().replace('```json', '').replace('```', '').split('{')[-1].split('}')[0]
-            sig_manual = json.loads('{' + clean_text + '}')
-            send_signal_ui(sig_manual)
+            bot.send_message(CHAT_ID, "⚠️ Gagal mendapatkan analisis AI.")
                 
     except Exception as e:
         bot.send_message(CHAT_ID, f"⚠️ Error analisis: {str(e)}")
