@@ -17,7 +17,7 @@ CHAT_ID = os.getenv("CHAT_ID") or os.getenv("ID_CHAT_TELEGRAM")
 
 # --- INISIALISASI CLIENT V1BETA (FIX 404) ---
 try:
-    # Menggunakan api_version v1beta secara eksplisit
+    # Menggunakan api_version v1beta secara eksplisit untuk mendukung fitur terbaru
     client = genai.Client(
         api_key=GEMINI_API_KEY,
         http_options={'api_version': 'v1beta'}
@@ -100,8 +100,8 @@ def get_ai_analysis(coin_data, custom_prompt=None):
         prompt = custom_prompt
 
     try:
-        # PENTING: Gunakan 'gemini-1.5-flash' saja. 
-        # API v1beta dipaksa melalui inisialisasi client di atas.
+        # PERBAIKAN KRITIS: Jangan gunakan 'models/gemini-1.5-flash'.
+        # SDK google-genai otomatis menambahkan prefix 'models/' di background.
         response = client.models.generate_content(
             model='gemini-1.5-flash', 
             contents=prompt,
@@ -112,7 +112,8 @@ def get_ai_analysis(coin_data, custom_prompt=None):
         
         return json.loads(response.text.strip())
     except Exception as e:
-        print(f"❌ Gemini Error ({symbol}): {e}")
+        # Log ini akan muncul di Railway untuk memudahkan debugging
+        print(f"❌ Kesalahan Gemini ({symbol}): {e}")
         return None
 
 def send_signal_ui(sig_data):
@@ -141,12 +142,12 @@ def send_signal_ui(sig_data):
     bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
 
 def run_scanner():
-    print(f"🔍 [{datetime.now().strftime('%H:%M:%S')}] Scanning Market...")
+    print(f"🔍 [{datetime.now().strftime('%H:%M:%S')}] Memindai Pasar...")
     try:
         res = call_binance_api("/api/v3/ticker/24hr")
         if not res: return
         
-        # Filter koin volume > 2jt USDT
+        # Filter koin volume > 2jt USDT agar sinyal lebih berkualitas
         all_targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 2000000]
         all_targets = sorted(all_targets, key=lambda x: float(x['quoteVolume']), reverse=True)[:25]
         
@@ -168,16 +169,18 @@ def manual_check_coin(message):
             return
         
         symbol = f"{text_split[1].upper().replace('USDT', '')}USDT"
-        bot.send_message(CHAT_ID, f"🔄 Menganalisis {symbol}...")
+        bot.send_message(CHAT_ID, f"🔄 Menganalisis {symbol} dengan AI ICT SMC...")
 
         ticker = call_binance_api(f"/api/v3/ticker/24hr?symbol={symbol}")
         if not ticker or 'lastPrice' not in ticker:
-            bot.send_message(CHAT_ID, f"❌ {symbol} tidak ditemukan.")
+            bot.send_message(CHAT_ID, f"❌ {symbol} tidak ditemukan di Binance.")
             return
 
         sig = get_ai_analysis(ticker, custom_prompt=f"Analyze {symbol} price {ticker['lastPrice']} with ICT SMC. Return ONLY JSON.")
-        if sig: send_signal_ui(sig)
-        else: bot.send_message(CHAT_ID, "⚠️ Tidak ada setup valid.")
+        if sig: 
+            send_signal_ui(sig)
+        else: 
+            bot.send_message(CHAT_ID, "⚠️ Gagal mendapatkan analisis AI. Coba koin lain.")
     except Exception as e:
         bot.send_message(CHAT_ID, f"⚠️ Error: {e}")
 
@@ -197,7 +200,8 @@ def main_keyboard():
 
 if __name__ == "__main__":
     try:
-        bot.send_message(CHAT_ID, "🏛️ **SMC System Online (v1beta)!**", reply_markup=main_keyboard())
+        bot.send_message(CHAT_ID, "🏛️ **SMC System Online (Fix 404 & Region Sync)!**", reply_markup=main_keyboard())
+        print("✅ Bot Bagas Rivansyah Ready.")
     except: pass
     
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
