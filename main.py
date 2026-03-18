@@ -21,8 +21,6 @@ except Exception as e:
     print(f"❌ Gagal AI: {e}")
 
 bot = telebot.TeleBot(TOKEN_TELEGRAM)
-# Perbaikan: Urutan URL Binance dioptimalkan
-BINANCE_URLS = ["https://api.binance.com", "https://api1.binance.com", "https://api2.binance.com", "https://api3.binance.com"]
 active_signals = []
 
 # --- TEKNIKAL ICT SMC ---
@@ -61,17 +59,28 @@ def get_ict_technical(symbol):
     except: return None
 
 def call_binance_api(endpoint):
-    # Perbaikan: Menambahkan headers agar server cloud tidak diblokir Binance
+    # Perbaikan: Rotasi endpoint dan headers lengkap untuk menembus blokir IP
+    endpoints = [
+        "https://api.binance.com",
+        "https://api1.binance.com",
+        "https://api2.binance.com",
+        "https://api3.binance.com",
+        "https://data-api.binance.vision"
+    ]
+    
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Content-Type': 'application/json'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'application/json'
     }
-    for base_url in BINANCE_URLS:
+
+    for base_url in endpoints:
         try:
             url = f"{base_url}{endpoint}"
-            response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code == 200: return response.json()
-        except: continue
+            response = requests.get(url, headers=headers, timeout=15) 
+            if response.status_code == 200:
+                return response.json()
+        except:
+            continue
     return None
 
 def get_ai_analysis(coin):
@@ -122,7 +131,7 @@ def run_scanner():
     try:
         res = call_binance_api("/api/v3/ticker/24hr")
         if not res: 
-            print(f"⚠️ [{timestamp}] Gagal mengambil data Binance. Mencoba endpoint lain...")
+            print(f"⚠️ [{timestamp}] Gagal mengambil data Binance. Mencoba titik akhir lain...")
             return
         
         # Volume minimal 300.000 agar lebih aktif di market volatile
@@ -162,7 +171,6 @@ def main_keyboard():
 
 if __name__ == "__main__":
     try: 
-        # Perbaikan: Tambahkan delay setelah remove_webhook untuk stabilitas
         bot.remove_webhook()
         time.sleep(2) 
         bot.send_message(CHAT_ID, "🏛️ **SMC Trading System Online!**", reply_markup=main_keyboard())
@@ -170,12 +178,11 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"⚠️ Gagal inisialisasi: {e}")
     
-    # Perbaikan: Tambahkan timeout pada polling
     threading.Thread(target=bot.infinity_polling, kwargs={'timeout': 20}, daemon=True).start()
     
     last_scan = 0
     while True:
-        if time.time() - last_scan > 900: 
+        if time.time() - last_scan > 600: # Dipercepat menjadi 10 menit agar lebih responsif
             run_scanner()
             last_scan = time.time()
         time.sleep(10)
