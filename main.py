@@ -125,7 +125,7 @@ def check_monitoring():
             is_long = sig['signal'].upper() == "LONG"
 
             if (is_long and cp <= sig['sl']) or (not is_long and cp >= sig['sl']):
-                bot.send_message(CHAT_ID, f"❌ **{sig['symbol']} SL HIT!**")
+                bot.send_message(CHAT_ID, f"❌ **#{sig['symbol']} SL HIT!**")
                 daily_stats["sl_hit"] += 1
                 active_signals.remove(sig)
                 continue
@@ -136,7 +136,7 @@ def check_monitoring():
                 if hit_key not in sig:
                     is_hit = (cp >= sig[tp_key]) if is_long else (cp <= sig[tp_key])
                     if is_hit:
-                        bot.send_message(CHAT_ID, f"✅ **{sig['symbol']} TP{i} HIT!** 🚀")
+                        bot.send_message(CHAT_ID, f"✅ **#{sig['symbol']} TP{i} HIT!** 🚀")
                         sig[hit_key] = True
                         if i == 3:
                             daily_stats["tp_hit"] += 1
@@ -153,12 +153,12 @@ def run_scanner():
             bot.send_message(CHAT_ID, "❌ Gagal mengambil data Binance.")
             return
         
-        # Volume dilonggarkan ke 500k dan kriteria koin diperbanyak
+        # Volume filter tetap 500k agar koin yang dipantau cukup likuid
         usdt_pairs = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 500000]
         sorted_c = sorted(usdt_pairs, key=lambda x: float(x['priceChangePercent']))
         
-        # Ambil 3 koin teratas dan 3 koin terbawah agar peluang sinyal lebih banyak
-        targets = sorted_c[:3] + sorted_c[-3:]
+        # PERUBAHAN UTAMA: Mengambil 10 koin terlemah dan 10 koin terkuat (Total 20 target)
+        targets = sorted_c[:10] + sorted_c[-10:]
         
         found_any = False
         for t in targets:
@@ -169,7 +169,8 @@ def run_scanner():
                 send_signal_ui(sig)
                 daily_stats["total"] += 1
                 found_any = True
-                time.sleep(2)
+                # Jeda singkat agar tidak terkena rate limit API Groq
+                time.sleep(1)
         
         if not found_any:
             bot.send_message(CHAT_ID, "🔍 Scan selesai: Belum ada setup yang pas di volume > 500k.")
@@ -186,19 +187,20 @@ def main_keyboard():
 
 @bot.message_handler(func=lambda message: message.text == '🔍 Scan Market Sekarang')
 def manual_scan(message):
-    bot.send_message(CHAT_ID, "🚀 Memulai pemindaian manual...")
+    bot.send_message(CHAT_ID, "🚀 Memulai pemindaian manual (20 koin target)...")
     run_scanner()
 
 @bot.message_handler(func=lambda message: message.text == '📊 Status Bot')
 def bot_status(message):
     msg = (f"🤖 **Status Bot:** Aktif\n"
            f"📈 Sinyal Aktif: {len(active_signals)}\n"
-           f"💰 Volume Filter: > 500,000 USDT")
+           f"💰 Volume Filter: > 500,000 USDT\n"
+           f"🎯 Target Scan: 20 Koin (Top 10 Gain/Loss)")
     bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
 
 if __name__ == "__main__":
     try:
-        bot.send_message(CHAT_ID, "🚀 **Bot AI Bagas Rivansyah Online!**\nVolume dilonggarkan ke 500k.", reply_markup=main_keyboard())
+        bot.send_message(CHAT_ID, "🚀 **Bot AI Bagas Rivansyah Online!**\nTarget diperluas ke 20 koin.", reply_markup=main_keyboard())
     except:
         pass
         
