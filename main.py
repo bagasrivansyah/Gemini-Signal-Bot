@@ -10,17 +10,25 @@ from datetime import datetime
 import threading
 
 # === CONFIGURATION (Railway Variables) ===
-TOKEN_TELEGRAM = os.getenv("TOKEN_TELEGRAM") # Sesuaikan dengan nama variabel di Railway
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") 
-CHAT_ID = os.getenv("CHAT_ID")
+# Menggunakan proteksi .get() agar tidak error jika variabel kosong
+TOKEN_TELEGRAM = os.getenv("TOKEN_TELEGRAM") or os.getenv("TOKEN TELEGRAM")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("KUNCI_API_GEMINI")
+CHAT_ID = os.getenv("CHAT_ID") or os.getenv("ID_CHAT_TELEGRAM")
 
-# Inisialisasi Gemini AI (Gunakan versi stabil)
+# Inisialisasi Gemini AI dengan Error Handling
 try:
+    if not GEMINI_API_KEY:
+        print("❌ ERROR: GEMINI_API_KEY tidak ditemukan!")
     genai.configure(api_key=GEMINI_API_KEY)
-    # Gunakan nama model langsung untuk menghindari error 404
     model_ai = genai.GenerativeModel('gemini-1.5-flash')
+    print("✅ Gemini AI Terhubung.")
 except Exception as e:
-    print(f"Gagal Inisialisasi AI: {e}")
+    print(f"❌ Gagal Inisialisasi AI: {e}")
+
+# Inisialisasi Bot Telegram
+if not TOKEN_TELEGRAM:
+    print("❌ ERROR: TOKEN_TELEGRAM tidak ditemukan!")
+    exit()
 
 bot = telebot.TeleBot(TOKEN_TELEGRAM)
 
@@ -85,7 +93,7 @@ def get_ai_analysis(coin):
         clean_json = response.text.strip().replace('```json', '').replace('```', '')
         return json.loads(clean_json)
     except Exception as e:
-        print(f"Gemini Error on {coin['symbol']}: {e}")
+        print(f"⚠️ Gemini Error on {coin['symbol']}: {e}")
         return None
 
 def send_signal_ui(sig_data):
@@ -127,13 +135,11 @@ def check_monitoring():
             if not cp: continue
             
             is_long = sig['signal'].upper() == "LONG"
-            # SL Check
             if (is_long and cp <= sig['sl']) or (not is_long and cp >= sig['sl']):
                 bot.send_message(CHAT_ID, f"❌ **#{sig['symbol']} SL HIT!**")
                 active_signals.remove(sig)
                 continue
             
-            # TP Check (TP1, TP2, TP3)
             for i in range(1, 4):
                 tp_key = f'tp{i}'
                 hit_key = f'hit_tp{i}'
@@ -146,12 +152,12 @@ def check_monitoring():
     except: pass
 
 def run_scanner():
-    print("Gemini Scanning...")
+    print("🔍 Gemini Scanning Market...")
     try:
         res = call_binance_api("/api/v3/ticker/24hr")
         if not res: return
         
-        # Filter: Volume > 100k USDT & Top 15 Volatility
+        # Filter: Volume > 100k USDT
         targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 100000]
         targets = sorted(targets, key=lambda x: abs(float(x['priceChangePercent'])), reverse=True)[:15]
         
@@ -162,10 +168,10 @@ def run_scanner():
                 active_signals.append(sig)
                 send_signal_ui(sig)
                 found = True
-                time.sleep(2) # Delay aman untuk Free Tier
+                time.sleep(1) # Delay minimal
         
         if not found:
-            bot.send_message(CHAT_ID, "🔍 Scan selesai: Belum ada setup yang pas di volume > 100k.")
+            bot.send_message(CHAT_ID, "🔍 Scan selesai: Market sedang sideways berat.")
     except Exception as e:
         print(f"Scanner Error: {e}")
 
@@ -183,18 +189,22 @@ def manual_scan(message):
 def bot_status(message):
     msg = (f"🤖 **Status Bot:** Aktif (Gemini 1.5 Flash)\n"
            f"📈 Sinyal Aktif: {len(active_signals)}\n"
-           f"🎯 Strategi: EMA 9/21 & Volume Spike")
+           f"🎯 Strategi: EMA 9/21 & Volume Spike\n"
+           f"👤 Developer: Bagas Rivansyah")
     bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
 
 if __name__ == "__main__":
+    print("🚀 Bot Starting...")
     try:
         bot.send_message(CHAT_ID, f"🚀 **Bot Gemini Bagas Rivansyah Online!**", reply_markup=main_keyboard())
-    except: pass
+    except Exception as e:
+        print(f"Gagal kirim pesan start: {e}")
     
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
     last_scan = 0
     while True:
+        # Auto scan setiap 1 jam
         if time.time() - last_scan > 3600:
             run_scanner()
             last_scan = time.time()
