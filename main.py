@@ -58,22 +58,24 @@ def get_ai_analysis(coin, condition):
     tech = get_technical_data(coin['symbol'])
     if tech['price'] == 0: return None
     
-    # PROMPT DILONGGARKAN: AI diminta lebih agresif mencari peluang di trend kecil
+    # PROMPT DIOPTIMALKAN: Memaksa AI memberikan analisa yang lebih tajam pada 20 koin target
     prompt = f"""
-    COIN: {coin['symbol']} | PRICE: {tech['price']} | RSI: {tech['rsi']} | 24h Change: {coin['priceChangePercent']}%
-    CONDITION: {condition} | LEVERAGE: 20x
+    ANALISA TEKNIKAL UNTUK: {coin['symbol']}
+    HARGA: {tech['price']} | RSI: {tech['rsi']} | 24h Change: {coin['priceChangePercent']}%
+    VOLUME: {coin['quoteVolume']} | LEVERAGE: 20x
     
-    Tugas: Berikan sinyal scalping Futures meskipun trend kecil. 
-    Jika RSI > 50 dan harga naik, pertimbangkan LONG. Jika RSI < 50 dan harga turun, pertimbangkan SHORT.
-    Berikan alasan singkat yang meyakinkan.
+    Tugas: Berikan sinyal scalping Futures. Jangan terlalu konservatif.
+    Cari potensi meskipun tren sedang kecil atau sideways.
+    - Jika RSI > 45 dan ada kenaikan, pertimbangkan LONG.
+    - Jika RSI < 55 dan ada penurunan, pertimbangkan SHORT.
     Hitung TP1 (ROI 20%), TP2 (ROI 40%), TP3 (ROI 100%) dan SL (ROI -50%) berdasarkan Leverage 20x.
     
     OUTPUT WAJIB JSON:
-    {{"symbol": "{coin['symbol']}", "signal": "LONG/SHORT", "entry": {tech['price']}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "rsi": {tech['rsi']}, "reason": "Alasan singkat"}}
+    {{"symbol": "{coin['symbol']}", "signal": "LONG/SHORT", "entry": {tech['price']}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "rsi": {tech['rsi']}, "reason": "Tulis penjelasan AI singkat di sini"}}
     """
     
     try:
-        completion = client.chat.completions.create(
+        completion = client.chat.create(
             model="llama3-70b-8192",
             messages=[{"role": "user", "content": prompt}],
             response_format={ "type": "json_object" }
@@ -153,11 +155,11 @@ def run_scanner():
             bot.send_message(CHAT_ID, "❌ Gagal mengambil data Binance.")
             return
         
-        # Volume filter tetap 500k agar koin yang dipantau cukup likuid
+        # Volume filter tetap 500k sesuai permintaan terakhir Anda
         usdt_pairs = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 500000]
         sorted_c = sorted(usdt_pairs, key=lambda x: float(x['priceChangePercent']))
         
-        # PERUBAHAN UTAMA: Mengambil 10 koin terlemah dan 10 koin terkuat (Total 20 target)
+        # Target 20 koin (10 terlemah + 10 terkuat)
         targets = sorted_c[:10] + sorted_c[-10:]
         
         found_any = False
@@ -169,8 +171,7 @@ def run_scanner():
                 send_signal_ui(sig)
                 daily_stats["total"] += 1
                 found_any = True
-                # Jeda singkat agar tidak terkena rate limit API Groq
-                time.sleep(1)
+                time.sleep(1) # Jeda untuk Groq API
         
         if not found_any:
             bot.send_message(CHAT_ID, "🔍 Scan selesai: Belum ada setup yang pas di volume > 500k.")
@@ -200,15 +201,15 @@ def bot_status(message):
 
 if __name__ == "__main__":
     try:
-        bot.send_message(CHAT_ID, "🚀 **Bot AI Bagas Rivansyah Online!**\nTarget diperluas ke 20 koin.", reply_markup=main_keyboard())
+        # Menghapus notifikasi ganda untuk menghindari Conflict Error 409
+        bot.send_message(CHAT_ID, f"🚀 **Bot AI Bagas Rivansyah Online!**\nTarget: 20 koin | Vol: 500k", reply_markup=main_keyboard())
     except:
         pass
         
-    threading.Thread(target=bot.infinity_polling).start()
+    threading.Thread(target=bot.infinity_polling, kwargs={'skip_pending_updates': True}).start()
 
     last_scan = 0
     while True:
-        # Scan otomatis dipercepat ke setiap 1 jam (3600 detik)
         if time.time() - last_scan > 3600:
             run_scanner()
             last_scan = time.time()
