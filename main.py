@@ -77,7 +77,7 @@ def call_binance_api(endpoint):
     return None
 
 def get_ai_analysis(coin, custom_prompt=None):
-    """Fungsi analisis Gemini yang diperbaiki untuk SDK terbaru"""
+    """Fungsi analisis Gemini yang diperbaiki untuk SDK terbaru dan stabilitas JSON"""
     ict = get_ict_technical(coin['symbol'])
     
     # Gunakan prompt standar jika tidak ada prompt custom
@@ -94,17 +94,17 @@ def get_ai_analysis(coin, custom_prompt=None):
         prompt = custom_prompt
 
     try:
-        # Perbaikan: Langsung gunakan nama model tanpa 'models/' untuk menghindari 404
+        # Perbaikan: Langsung gunakan nama model tanpa 'models/' untuk menghindari 404 pada SDK baru
         response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
         
-        # Logika pembersihan JSON yang lebih kuat
+        # Logika pembersihan JSON yang jauh lebih kuat (mencari kurung kurawal)
         text = response.text.strip()
-        if "```json" in text:
-            text = text.split("```json")[1].split("```")[0].strip()
-        elif "```" in text:
-            text = text.split("```")[1].split("```")[0].strip()
-            
-        return json.loads(text)
+        start = text.find('{')
+        end = text.rfind('}') + 1
+        if start != -1 and end != 0:
+            json_str = text[start:end]
+            return json.loads(json_str)
+        return None
     except Exception as e:
         print(f"❌ Gemini Error: {e}")
         return None
@@ -113,15 +113,15 @@ def send_signal_ui(sig_data):
     if not sig_data: return
     symbol = sig_data['symbol']
     chart_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}PERP"
-    arrow = "▲" if sig_data['signal'] == "LONG" else "▼"
+    arrow = "▲" if sig_data.get('signal', '').upper() == "LONG" else "▼"
     
     msg = (
         f"🏛️ **ICT SMC PRO SIGNAL** 🏛️\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🪙 **Pair:** #{symbol} | `20x Cross`\n"
-        f"📈 **Side:** {sig_data['signal']} {arrow}\n"
+        f"📈 **Side:** {sig_data.get('signal', 'N/A')} {arrow}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"💎 **Entry:** `{sig_data['entry']}`\n"
+        f"💎 **Entry:** `{sig_data.get('entry', 0)}`\n"
         f"🎯 **TP 1:** `{sig_data.get('tp1', 0)}` (RR 1:1)\n"
         f"🔥 **TP 2:** `{sig_data.get('tp2', 0)}` (RR 1:2)\n"
         f"🚀 **TP 3:** `{sig_data.get('tp3', 0)}` (RR 1:3)\n"
@@ -153,7 +153,7 @@ def run_scanner():
                 send_signal_ui(sig)
                 found = True
                 print(f"✅ Sinyal Ditemukan: {t['symbol']}")
-                time.sleep(0.1) 
+                time.sleep(0.5) # Jeda sedikit lebih lama agar AI tidak limit
                 
         if not found: 
             print(f"🌑 [{timestamp}] Scan Selesai: Belum ada setup FVG.")
@@ -180,13 +180,13 @@ def manual_check_coin(message):
             bot.send_message(CHAT_ID, f"❌ Koin {symbol} tidak ditemukan.")
             return
 
-        # Buat prompt manual untuk instruksi AI yang lebih jelas
+        # Buat prompt manual yang lebih 'memaksa' AI memberikan jawaban ICT
         price_now = ticker_data['lastPrice']
         prompt_cek = f"""
         Analyze {symbol} price {price_now} using ICT SMC. 
-        Give bias (LONG/SHORT/WAIT), Entry, SL, and 3 TPs for 20x leverage.
-        Return ONLY JSON:
-        {{"symbol": "{symbol}", "signal": "LONG", "entry": {price_now}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "reason": "AI Insight"}}
+        Even if there is no perfect FVG, give your best bias (LONG/SHORT/WAIT), Entry, SL, and 3 TPs for 20x leverage.
+        Return ONLY JSON format:
+        {{"symbol": "{symbol}", "signal": "LONG/SHORT", "entry": {price_now}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "reason": "AI Analysis"}}
         """
         
         sig = get_ai_analysis(ticker_data, custom_prompt=prompt_cek)
@@ -194,7 +194,7 @@ def manual_check_coin(message):
         if sig:
             send_signal_ui(sig)
         else:
-            bot.send_message(CHAT_ID, "⚠️ Gagal mendapatkan analisis AI.")
+            bot.send_message(CHAT_ID, "⚠️ Gagal mendapatkan analisis AI. Coba lagi koin lain.")
                 
     except Exception as e:
         bot.send_message(CHAT_ID, f"⚠️ Error analisis: {str(e)}")
@@ -202,7 +202,8 @@ def manual_check_coin(message):
 @bot.message_handler(func=lambda message: message.text == '🔍 Scan Market Sekarang')
 def manual_scan(message):
     bot.send_message(CHAT_ID, "🚀 Mencari Setup ICT SMC Agresif di Seluruh Market...")
-    run_scanner()
+    # Jalankan di thread agar bot tidak freeze
+    threading.Thread(target=run_scanner).start()
 
 @bot.message_handler(func=lambda message: message.text == '📊 Status Bot')
 def bot_status(message):
@@ -221,10 +222,12 @@ if __name__ == "__main__":
         print("✅ Bot Bagas Rivansyah Ready.")
     except: pass
     
+    # Menjalankan polling di background thread
     threading.Thread(target=bot.infinity_polling, kwargs={'timeout': 20}, daemon=True).start()
     
     last_scan = 0
     while True:
+        # Scan otomatis setiap 10 menit
         if time.time() - last_scan > 600: 
             run_scanner()
             last_scan = time.time()
