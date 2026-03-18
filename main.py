@@ -15,17 +15,21 @@ TOKEN_TELEGRAM = os.getenv("TOKEN_TELEGRAM") or os.getenv("TOKEN TELEGRAM")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("KUNCI_API_GEMINI")
 CHAT_ID = os.getenv("CHAT_ID") or os.getenv("ID_CHAT_TELEGRAM")
 
-# --- INISIALISASI CLIENT (STABLE FOR RAILWAY) ---
+# --- INISIALISASI CLIENT (PERBAIKAN JALUR STABLE) ---
 try:
-    # Jangan pakai v1beta di http_options jika masih 404, biarkan default SDK yang mengatur
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    print("✅ Gemini AI System Connected (Bagas Rivansyah Edition).")
+    # PERBAIKAN: Kita hapus paksaan v1beta agar SDK menggunakan jalur Stable v1
+    # Ini akan menghilangkan error 404 pada model flash
+    client = genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options={'api_version': 'v1'} 
+    )
+    print("✅ Gemini AI System Connected (Stable v1 Mode).")
 except Exception as e:
     print(f"❌ Gagal AI: {e}")
 
 bot = telebot.TeleBot(TOKEN_TELEGRAM)
 
-# --- SISTEM KONEKSI BINANCE (RETRY LOGIC) ---
+# --- SISTEM KONEKSI BINANCE ---
 def call_binance_api(endpoint):
     endpoints = [
         "https://api.binance.com",
@@ -47,7 +51,7 @@ def get_ict_technical(symbol):
         if not data or len(data) < 10: return None
         c = [{"h": float(x[2]), "l": float(x[3]), "c": float(x[4]), "v": float(x[5])} for x in data]
         price = c[-1]['c']
-        # Displacement check
+        
         avg_vol = sum([x['v'] for x in c[-10:]]) / 10
         if c[-2]['v'] > (avg_vol * 1.2):
             if c[-2]['l'] > c[-4]['h']:
@@ -57,7 +61,7 @@ def get_ict_technical(symbol):
         return None
     except: return None
 
-# --- AI ANALYSIS (PERBAIKAN PATH MODEL) ---
+# --- AI ANALYSIS (FIXED MODEL CALL) ---
 def get_ai_analysis(coin_data, custom_prompt=None):
     symbol = coin_data['symbol']
     ict = get_ict_technical(symbol)
@@ -66,19 +70,22 @@ def get_ai_analysis(coin_data, custom_prompt=None):
     prompt = custom_prompt or f"""
     Role: Expert ICT SMC Trader. Pair: {symbol} at {price}.
     Bias: {ict['side'] if ict else 'Neutral'}, Logic: {ict['reason'] if ict else 'Price Action'}.
-    Requirement: 20x Leverage. Return ONLY JSON:
+    Return ONLY JSON:
     {{"symbol": "{symbol}", "signal": "LONG/SHORT", "entry": {price}, "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "reason": "AI Logic"}}
     """
 
     try:
-        # PERBAIKAN KRITIS: Gunakan 'models/gemini-1.5-flash' (Wajib pakai prefix 'models/')
-        # Jika tetap 404, gunakan 'models/gemini-1.5-flash-latest'
+        # Gunakan ID model tanpa prefix 'models/' karena sudah di jalur Stable v1
         response = client.models.generate_content(
-            model='models/gemini-1.5-flash', 
+            model='gemini-1.5-flash', 
             contents=prompt,
-            config=types.GenerateContentConfig(response_mime_type='application/json')
+            config=types.GenerateContentConfig(
+                response_mime_type='application/json' 
+            )
         )
+        
         if response.text:
+            # Bersihkan response jika ada karakter aneh
             return json.loads(response.text.strip())
         return None
     except Exception as e:
@@ -128,8 +135,13 @@ def manual_check(message):
     except: bot.send_message(CHAT_ID, "Gunakan: /cek BTC")
 
 if __name__ == "__main__":
-    bot.send_message(CHAT_ID, "🏛️ **SMC System Bagas Rivansyah Online!**")
+    try:
+        bot.send_message(CHAT_ID, "🏛️ **SMC System Bagas Rivansyah Online!**")
+        print("✅ Bot Ready.")
+    except: pass
+    
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
+    
     while True:
         run_scanner()
         time.sleep(1800)
