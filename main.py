@@ -24,7 +24,7 @@ bot = telebot.TeleBot(TOKEN_TELEGRAM)
 BINANCE_URLS = ["https://api1.binance.com", "https://api2.binance.com", "https://api3.binance.com"]
 active_signals = []
 
-# --- TEKNIKAL ICT SMC (DIADAPTASI DARI SCRIPT PRO) ---
+# --- TEKNIKAL ICT SMC ---
 def get_htf_trend(symbol):
     """Cek trend di timeframe 4H untuk konfirmasi arah besar"""
     data = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=4h&limit=5")
@@ -41,18 +41,16 @@ def get_ict_technical(symbol):
         c = [{"h": float(x[2]), "l": float(x[3]), "c": float(x[4]), "v": float(x[5])} for x in data]
         avg_vol = sum([x['v'] for x in c[-10:]]) / 10
         current_vol = c[-2]['v']
-        has_displacement = current_vol > (avg_vol * 1.5) # Volume lonjakan 1.5x
+        has_displacement = current_vol > (avg_vol * 1.5) 
 
         htf = get_htf_trend(symbol)
         price = c[-1]['c']
         
         # Logika ICT: Fair Value Gap (FVG)
-        # Bullish FVG: Low candle saat ini > High candle 2 bar sebelumnya
         if htf == "BULLISH" and c[-2]['l'] > c[-4]['h'] and has_displacement:
             swing_low = min([x['l'] for x in c[-10:-1]])
             return {"side": "LONG", "reason": "BULLISH FVG + Displacement + HTF", "sl": swing_low * 0.998, "price": price}
             
-        # Bearish FVG: High candle saat ini < Low candle 2 bar sebelumnya
         if htf == "BEARISH" and c[-2]['h'] < c[-4]['l'] and has_displacement:
             swing_high = max([x['h'] for x in c[-10:-1]])
             return {"side": "SHORT", "reason": "BEARISH FVG + Displacement + HTF", "sl": swing_high * 1.002, "price": price}
@@ -70,11 +68,9 @@ def call_binance_api(endpoint):
     return None
 
 def get_ai_analysis(coin):
-    # Menggunakan teknikal ICT SMC
     ict = get_ict_technical(coin['symbol'])
     if not ict: return None
     
-    # AI bertugas menghitung TP dinamis berdasarkan Risk:Reward dari SL ICT
     prompt = f"""
     Expert ICT SMC Trader: Analyze {coin['symbol']}.
     Current Price: {ict['price']}, Side: {ict['side']}, SL: {ict['sl']}, Reason: {ict['reason']}.
@@ -107,31 +103,42 @@ def send_signal_ui(sig_data):
         f"🚀 **TP 3:** `{sig_data.get('tp3', 0)}` (RR 1:3)\n"
         f"🛑 **Stop Loss:** `{sig_data.get('sl', 0)}`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"💡 **Logic:** `{sig_data.get('reason', 'N/A')}`\n"
+        f"💡 **AI Reason:** _{sig_data.get('reason', 'N/A')}_\n"
         f"🔗 [VIEW CHART]({chart_url})\n"
         f"⚠️ *Bagas Rivansyah: Gunakan RM!*"
     )
     bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
 
+# --- UPDATED SCANNER WITH LOGGING ---
 def run_scanner():
-    print("🔍 ICT Scanning Market...")
+    timestamp = datetime.now().strftime('%H:%M:%S')
+    print(f"🔍 [{timestamp}] Memulai pemindaian ICT SMC...")
     try:
         res = call_binance_api("/api/v3/ticker/24hr")
-        if not res: return
+        if not res: 
+            print("⚠️ Gagal mengambil data Binance.")
+            return
         
-        # Volume minimal 500.000 agar lebih valid untuk ICT
         targets = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 500000]
         targets = sorted(targets, key=lambda x: abs(float(x['priceChangePercent'])), reverse=True)[:15]
         
         found = False
         for t in targets:
+            # Log deteksi per koin untuk debugging Railway
+            print(f"🧐 Mengecek: {t['symbol']} | Volume: {float(t['quoteVolume']):,.0f}")
+            
             sig = get_ai_analysis(t)
             if sig and 'signal' in sig:
                 active_signals.append(sig)
                 send_signal_ui(sig)
                 found = True
-        if not found: bot.send_message(CHAT_ID, "🔍 Selesai: Setup ICT (FVG) belum ditemukan.")
-    except: pass
+                print(f"✅ Sinyal Ditemukan: {t['symbol']}")
+                
+        if not found: 
+            print("🌑 Scan Selesai: Tidak ada koin memenuhi kriteria FVG.")
+            bot.send_message(CHAT_ID, "🔍 Selesai: Setup ICT (FVG) belum ditemukan.")
+    except Exception as e:
+        print(f"❌ Error saat scan: {e}")
 
 @bot.message_handler(func=lambda message: message.text == '🔍 Scan Market Sekarang')
 def manual_scan(message):
@@ -148,12 +155,17 @@ def main_keyboard():
     return markup
 
 if __name__ == "__main__":
-    try: bot.send_message(CHAT_ID, "🏛️ **SMC Trading System Online!**", reply_markup=main_keyboard())
+    try: 
+        bot.remove_webhook() # Menghindari Error 409 Conflict
+        time.sleep(1)
+        bot.send_message(CHAT_ID, "🏛️ **SMC Trading System Online!**", reply_markup=main_keyboard())
     except: pass
+    
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
+    
     last_scan = 0
     while True:
-        if time.time() - last_scan > 900: # Scan otomatis setiap 15 menit
+        if time.time() - last_scan > 900: 
             run_scanner()
             last_scan = time.time()
         time.sleep(10)
