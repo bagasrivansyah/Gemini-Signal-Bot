@@ -58,7 +58,6 @@ def get_ai_analysis(coin, condition):
     tech = get_technical_data(coin['symbol'])
     if tech['price'] == 0: return None
     
-    # PROMPT DIOPTIMALKAN: Memaksa AI memberikan analisa yang lebih tajam pada 20 koin target
     prompt = f"""
     ANALISA TEKNIKAL UNTUK: {coin['symbol']}
     HARGA: {tech['price']} | RSI: {tech['rsi']} | 24h Change: {coin['priceChangePercent']}%
@@ -75,7 +74,7 @@ def get_ai_analysis(coin, condition):
     """
     
     try:
-        completion = client.chat.create(
+        completion = client.chat.completions.create(
             model="llama3-70b-8192",
             messages=[{"role": "user", "content": prompt}],
             response_format={ "type": "json_object" }
@@ -155,11 +154,9 @@ def run_scanner():
             bot.send_message(CHAT_ID, "❌ Gagal mengambil data Binance.")
             return
         
-        # Volume filter tetap 500k sesuai permintaan terakhir Anda
         usdt_pairs = [c for c in res if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 500000]
         sorted_c = sorted(usdt_pairs, key=lambda x: float(x['priceChangePercent']))
         
-        # Target 20 koin (10 terlemah + 10 terkuat)
         targets = sorted_c[:10] + sorted_c[-10:]
         
         found_any = False
@@ -171,7 +168,7 @@ def run_scanner():
                 send_signal_ui(sig)
                 daily_stats["total"] += 1
                 found_any = True
-                time.sleep(1) # Jeda untuk Groq API
+                time.sleep(1)
         
         if not found_any:
             bot.send_message(CHAT_ID, "🔍 Scan selesai: Belum ada setup yang pas di volume > 500k.")
@@ -201,12 +198,12 @@ def bot_status(message):
 
 if __name__ == "__main__":
     try:
-        # Menghapus notifikasi ganda untuk menghindari Conflict Error 409
         bot.send_message(CHAT_ID, f"🚀 **Bot AI Bagas Rivansyah Online!**\nTarget: 20 koin | Vol: 500k", reply_markup=main_keyboard())
     except:
         pass
         
-    threading.Thread(target=bot.infinity_polling, kwargs={'skip_pending_updates': True}).start()
+    # Perbaikan Utama: Menghapus keyword argument yang tidak didukung
+    threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
     last_scan = 0
     while True:
