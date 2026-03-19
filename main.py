@@ -194,7 +194,7 @@ def monitor_active_signals():
                     bot.send_message(CHAT_ID, msg)
                     # Simpan ke history laporan harian
                     TRADE_HISTORY.append({"symbol": symbol, "roi": roi, "status": status})
-                    COOLDOWN_COINS[symbol] = datetime.now(timezone.utc) + timedelta(hours=1)
+                    COOLDOWN_COINS[symbol] = datetime.now(timezone.utc) + timedelta(hours=4)
                     ACTIVE_SIGNALS.remove(sig)
             time.sleep(60) 
         except: time.sleep(60)
