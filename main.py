@@ -25,7 +25,7 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 bot = telebot.TeleBot(TOKEN_TELEGRAM)
 client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# --- HELPER: FORMAT & ROI ---
+# --- HELPER: HITUNG ROI ---
 def calculate_roi(entry, target, side):
     try:
         entry, target = float(entry), float(target)
@@ -33,17 +33,13 @@ def calculate_roi(entry, target, side):
         return (diff / entry) * 100 * LEVERAGE
     except: return 0
 
+# --- HELPER: FORMAT HARGA (DIPERBAIKI UNTUK MICIN) ---
 def format_price(val):
     try:
         if val is None or float(val) == 0: return "0"
         val = float(val)
-        # Untuk koin micin (harga di bawah 0.0001)
-        if val < 0.0001: 
-            return f"{val:.10f}".rstrip('0').rstrip('.')
-        # Untuk koin menengah
-        if val < 1: 
-            return f"{val:.6f}".rstrip('0').rstrip('.')
-        # Untuk koin besar (BTC, ETH, dll)
+        if val < 0.0001: return f"{val:.10f}".rstrip('0').rstrip('.')
+        if val < 1: return f"{val:.6f}".rstrip('0').rstrip('.')
         return f"{val:,.2f}"
     except: return str(val)
 
@@ -56,29 +52,40 @@ def call_binance_api(endpoint):
         except: continue
     return None
 
-# --- UPGRADE: MULTI-TIMEFRAME TECHNICAL ANALYSIS ---
+# --- UPGRADE: MULTI-TIMEFRAME TECHNICAL ANALYSIS (FIXED INDEX ERROR) ---
 def get_multi_tf_technical(symbol):
     try:
+        # 1. Ambil Data 4 Jam (4H) - Institutional Trend
         data_4h = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=4h&limit=20")
+        # 2. Ambil Data 1 Jam (1H) - Sniper Entry
         data_1h = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=1h&limit=50")
         
-        if not data_4h or not data_1h: return None
+        # VALIDASI: Pastikan data cukup sebelum di-index agar tidak error "out of range"
+        if not data_4h or len(data_4h) < 5 or not data_1h or len(data_1h) < 2:
+            print(f"⚠️ {symbol}: Data history tidak cukup untuk analisa Multi-TF.")
+            return None
 
+        # Proses 4H Trend
         c4h = [{"c": float(x[4])} for x in data_4h]
         trend_4h = "BULLISH" if c4h[-1]['c'] > c4h[-5]['c'] else "BEARISH"
         
+        # Proses 1H Detail
         c1h = [{"c": float(x[4]), "h": float(x[2]), "l": float(x[3]), "v": float(x[5])} for x in data_1h]
         price_now = c1h[-1]['c']
+        
+        # Hitung volatilitas dengan aman
+        vol_change = abs(c1h[-1]['c'] - c1h[-2]['c'])
+        volatility = "HIGH" if vol_change > (price_now * 0.005) else "NORMAL"
         
         return {
             "trend_4h": trend_4h,
             "price_1h": price_now,
             "high_24h": max([x['h'] for x in c1h]),
             "low_24h": min([x['l'] for x in c1h]),
-            "volatility": "HIGH" if abs(c1h[-1]['c'] - c1h[-2]['c']) > (price_now * 0.005) else "NORMAL"
+            "volatility": volatility
         }
     except Exception as e:
-        print(f"Error Technical Multi-TF: {e}")
+        print(f"❌ Kesalahan Teknis Multi-TF {symbol}: {e}")
         return None
 
 # --- AI SNIPER ANALYSIS (PRO) ---
@@ -89,13 +96,15 @@ def get_ai_analysis(coin_data):
     change = coin_data.get('priceChangePercent', '0')
     tf_data = get_multi_tf_technical(symbol)
     
+    if not tf_data: return None
+
     prompt = f"""
     Role: Senior Institutional Trader & SMC Expert.
     Market Data {symbol}:
     - Current Price: {format_price(price)}
     - 24h Change: {change}%
-    - Institutional Trend (4H): {tf_data['trend_4h'] if tf_data else 'Unknown'}
-    - Intra-day Volatility (1H): {tf_data['volatility'] if tf_data else 'Unknown'}
+    - Institutional Trend (4H): {tf_data['trend_4h']}
+    - Intra-day Volatility (1H): {tf_data['volatility']}
 
     Task: Cari Sniper Entry menggunakan Smart Money Concepts (SMC).
     STRATEGI:
@@ -112,7 +121,7 @@ def get_ai_analysis(coin_data):
         return json.loads(completion.choices[0].message.content)
     except: return None
 
-# --- UI DISPLAY (Updated for Manual Check) ---
+# --- UI DISPLAY ---
 def send_signal_ui(sig_data, target_chat=CHAT_ID):
     if not sig_data or sig_data.get('signal') not in ['LONG', 'SHORT']: return
     symbol = sig_data['symbol']
@@ -146,7 +155,7 @@ def send_signal_ui(sig_data, target_chat=CHAT_ID):
     bot.send_message(target_chat, msg, parse_mode="Markdown", disable_web_page_preview=False)
     ACTIVE_SIGNALS.append(sig_data) 
 
-# --- NEW: MANUAL CHECK HANDLER ---
+# --- MANUAL CHECK HANDLER ---
 @bot.message_handler(commands=['cek'])
 @bot.message_handler(func=lambda m: m.text.lower().startswith('cek'))
 def manual_check(message):
@@ -160,24 +169,22 @@ def manual_check(message):
         symbol = f"{coin}USDT"
         
         if symbol in STABLE_COINS:
-            bot.reply_to(message, "⚠️ Koin stable tidak didukung untuk analisa.")
+            bot.reply_to(message, "⚠️ Koin stable tidak didukung.")
             return
 
-        sent_msg = bot.send_message(message.chat.id, f"🔍 Sedang menganalisis **{symbol}** dengan Multi-TF Sniper AI...")
-        
-        # Ambil data dari Binance
+        sent_msg = bot.send_message(message.chat.id, f"🔍 Menganalisis **{symbol}** dengan Sniper AI...")
         res = call_binance_api(f"/api/v3/ticker/24hr?symbol={symbol}")
         
         if res and 'lastPrice' in res:
             sig = get_ai_analysis(res)
             if sig:
                 if sig.get('signal') == "WAIT":
-                    bot.edit_message_text(f"☕ **{symbol}**: AI menyarankan **WAIT**. Belum ada setup sniper yang valid saat ini.", message.chat.id, sent_msg.message_id)
+                    bot.edit_message_text(f"☕ **{symbol}**: AI menyarankan **WAIT**.", message.chat.id, sent_msg.message_id)
                 else:
                     bot.delete_message(message.chat.id, sent_msg.message_id)
-                    send_signal_ui(sig, message.chat.id) # Kirim hasil ke DM pengirim
+                    send_signal_ui(sig, message.chat.id)
             else:
-                bot.edit_message_text(f"❌ Gagal mendapatkan analisis AI untuk {symbol}.", message.chat.id, sent_msg.message_id)
+                bot.edit_message_text(f"❌ Gagal analisis {symbol}. Data mungkin tidak cukup.", message.chat.id, sent_msg.message_id)
         else:
             bot.edit_message_text(f"❌ Pair **{symbol}** tidak ditemukan di Binance Spot.", message.chat.id, sent_msg.message_id)
     except Exception as e:
@@ -185,7 +192,7 @@ def manual_check(message):
 
 # --- MONITORING & SCANNER ---
 def monitor_active_signals():
-    global ACTIVE_SIGNALS, TRADE_HISTORY, COOLDOWN_COINS
+    global ACTIVE_SIGNALS, COOLDOWN_COINS
     while True:
         try:
             for sig in ACTIVE_SIGNALS[:]:
@@ -234,14 +241,14 @@ def run_scanner():
             
             sig = get_ai_analysis(t)
             if sig:
-                send_signal_ui(sig, CHAT_ID) # Otomatis kirim ke channel
+                send_signal_ui(sig, CHAT_ID)
                 time.sleep(15) 
         except: continue
 
 # --- HANDLERS ---
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
-    bot.send_message(message.chat.id, "🚀 **Multi-TF Sniper SMC Online**\nGunakan `/cek <koin>` untuk analisa manual.", reply_markup=main_menu())
+    bot.send_message(message.chat.id, "🚀 **Sniper SMC Pro Online**", reply_markup=main_menu())
 
 def main_menu():
     markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
@@ -250,14 +257,14 @@ def main_menu():
 
 @bot.message_handler(func=lambda m: m.text == "🔍 Scan Market Sekarang")
 def manual_scan_btn(message):
-    bot.reply_to(message, "🔄 Sniper sedang melakukan Multi-TF Analysis...")
+    bot.reply_to(message, "🔄 Memulai scan Multi-TF...")
     threading.Thread(target=run_scanner).start()
 
 @bot.message_handler(func=lambda m: m.text == "📊 Status Bot")
 def status_btn(message):
     total = len(ACTIVE_SIGNALS)
     pairs = ", ".join([s['symbol'] for s in ACTIVE_SIGNALS]) if ACTIVE_SIGNALS else "None"
-    bot.send_message(message.chat.id, f"🟢 **Status: Sniper Active**\n🎯 Signals: {total}\n🪙 Monitoring: {pairs}")
+    bot.send_message(message.chat.id, f"🟢 **Status: Online**\n🎯 Signals: {total}\n🪙 Monitoring: {pairs}")
 
 if __name__ == "__main__":
     threading.Thread(target=monitor_active_signals, daemon=True).start()
