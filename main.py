@@ -33,7 +33,7 @@ def calculate_roi(entry, target, side):
         return (diff / entry) * 100 * LEVERAGE
     except: return 0
 
-# --- HELPER: FORMAT HARGA (DIPERBAIKI UNTUK MICIN) ---
+# --- HELPER: FORMAT HARGA (PRESISI TINGGI UNTUK MICIN) ---
 def format_price(val):
     try:
         if val is None or float(val) == 0: return "0"
@@ -44,36 +44,30 @@ def format_price(val):
     except: return str(val)
 
 def call_binance_api(endpoint):
-    endpoints = ["https://api.binance.com", "https://api3.binance.com", "https://data-api.binance.vision"]
-    for base_url in endpoints:
-        try:
-            response = requests.get(f"{base_url}{endpoint}", timeout=10) 
-            if response.status_code == 200: return response.json()
-        except: continue
+    url = f"https://api.binance.com{endpoint}"
+    try:
+        # Tambahkan timeout agar tidak hang jika jaringan lambat
+        response = requests.get(url, timeout=10) 
+        if response.status_code == 200: return response.json()
+    except: return None
     return None
 
-# --- UPGRADE: MULTI-TIMEFRAME TECHNICAL ANALYSIS (FIXED INDEX ERROR) ---
+# --- TECHNICAL ANALYSIS (FIXED INDEX & SPEED) ---
 def get_multi_tf_technical(symbol):
     try:
-        # 1. Ambil Data 4 Jam (4H) - Institutional Trend
-        data_4h = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=4h&limit=20")
-        # 2. Ambil Data 1 Jam (1H) - Sniper Entry
-        data_1h = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=1h&limit=50")
+        data_4h = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=4h&limit=10")
+        data_1h = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=1h&limit=30")
         
-        # VALIDASI: Pastikan data cukup sebelum di-index agar tidak error "out of range"
-        if not data_4h or len(data_4h) < 5 or not data_1h or len(data_1h) < 2:
-            print(f"⚠️ {symbol}: Data history tidak cukup untuk analisa Multi-TF.")
+        # Validasi minimal data (minimal 6 candle untuk perbandingan index -5)
+        if not data_4h or len(data_4h) < 6 or not data_1h or len(data_1h) < 2:
             return None
 
-        # Proses 4H Trend
         c4h = [{"c": float(x[4])} for x in data_4h]
         trend_4h = "BULLISH" if c4h[-1]['c'] > c4h[-5]['c'] else "BEARISH"
         
-        # Proses 1H Detail
-        c1h = [{"c": float(x[4]), "h": float(x[2]), "l": float(x[3]), "v": float(x[5])} for x in data_1h]
+        c1h = [{"c": float(x[4]), "h": float(x[2]), "l": float(x[3])} for x in data_1h]
         price_now = c1h[-1]['c']
         
-        # Hitung volatilitas dengan aman
         vol_change = abs(c1h[-1]['c'] - c1h[-2]['c'])
         volatility = "HIGH" if vol_change > (price_now * 0.005) else "NORMAL"
         
@@ -84,39 +78,31 @@ def get_multi_tf_technical(symbol):
             "low_24h": min([x['l'] for x in c1h]),
             "volatility": volatility
         }
-    except Exception as e:
-        print(f"❌ Kesalahan Teknis Multi-TF {symbol}: {e}")
+    except:
         return None
 
-# --- AI SNIPER ANALYSIS (PRO) ---
+# --- AI SNIPER ENGINE ---
 def get_ai_analysis(coin_data):
     if not client_groq: return None
     symbol = coin_data['symbol']
     price = float(coin_data.get('lastPrice') or coin_data.get('price'))
-    change = coin_data.get('priceChangePercent', '0')
     tf_data = get_multi_tf_technical(symbol)
     
-    if not tf_data: return None
+    # Jika data teknikal tidak cukup, segera kembalikan None agar scanner tidak sleep
+    if not tf_data:
+        return None
 
     prompt = f"""
-    Role: Senior Institutional Trader & SMC Expert.
-    Market Data {symbol}:
-    - Current Price: {format_price(price)}
-    - 24h Change: {change}%
-    - Institutional Trend (4H): {tf_data['trend_4h']}
-    - Intra-day Volatility (1H): {tf_data['volatility']}
-
-    Task: Cari Sniper Entry menggunakan Smart Money Concepts (SMC).
-    STRATEGI:
-    1. Entry 1H wajib searah dengan Trend 4H.
-    2. Jika arah tidak selaras, kembalikan signal "WAIT".
-    3. RR minimal 1:2. SL maksimal 3%. No scientific notation.
-    Output RAW JSON ONLY.
+    Role: Senior Institutional Trader. Analisa {symbol} price {format_price(price)}.
+    4H Trend: {tf_data['trend_4h']}. Volatility: {tf_data['volatility']}.
+    Task: Berikan Sniper Signal JSON: signal(LONG/SHORT/WAIT), entry, tp1, tp2, tp3, sl, reason.
+    Ketentuan: Searah trend 4H, RR 1:2, SL max 3%, NO scientific notation.
     """
     try:
         completion = client_groq.chat.completions.create(
             model=GROQ_MODEL, messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
+            timeout=20
         )
         return json.loads(completion.choices[0].message.content)
     except: return None
@@ -124,9 +110,7 @@ def get_ai_analysis(coin_data):
 # --- UI DISPLAY ---
 def send_signal_ui(sig_data, target_chat=CHAT_ID):
     if not sig_data or sig_data.get('signal') not in ['LONG', 'SHORT']: return
-    symbol = sig_data['symbol']
-    side = sig_data['signal'].upper()
-    entry = sig_data['entry']
+    symbol, side, entry = sig_data['symbol'], sig_data['signal'].upper(), float(sig_data['entry'])
     
     roi1 = calculate_roi(entry, sig_data['tp1'], side)
     roi2 = calculate_roi(entry, sig_data['tp2'], side)
@@ -147,7 +131,7 @@ def send_signal_ui(sig_data, target_chat=CHAT_ID):
         f"🎯 **TP3:** `{format_price(sig_data['tp3'])}` ({roi3:+.1f}%)\n"
         f"🛑 **SL:** `{format_price(sig_data['sl'])}`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"💡 **AI Logic:** {sig_data.get('reason', 'Aligned with 4H Trend')}\n\n"
+        f"💡 **AI:** {sig_data.get('reason', 'Institutional Alignment OK')}\n\n"
         f"📊 [Lihat Chart TradingView]({tv_link})\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 *Sniper Dev: Bagas Rivansyah*"
@@ -155,60 +139,57 @@ def send_signal_ui(sig_data, target_chat=CHAT_ID):
     bot.send_message(target_chat, msg, parse_mode="Markdown", disable_web_page_preview=False)
     ACTIVE_SIGNALS.append(sig_data) 
 
-# --- MANUAL CHECK HANDLER ---
+# --- MANUAL CHECK HANDLER (FAST RESPON) ---
 @bot.message_handler(commands=['cek'])
 @bot.message_handler(func=lambda m: m.text.lower().startswith('cek'))
 def manual_check(message):
     try:
         parts = message.text.split()
         if len(parts) < 2:
-            bot.reply_to(message, "💡 Gunakan format: `/cek BTC` atau `/cek PEPE`", parse_mode="Markdown")
+            bot.reply_to(message, "💡 Format: `/cek BTC`", parse_mode="Markdown")
             return
             
         coin = parts[1].upper().replace("USDT", "")
         symbol = f"{coin}USDT"
         
         if symbol in STABLE_COINS:
-            bot.reply_to(message, "⚠️ Koin stable tidak didukung.")
+            bot.reply_to(message, "⚠️ Koin stable diabaikan.")
             return
 
-        sent_msg = bot.send_message(message.chat.id, f"🔍 Menganalisis **{symbol}** dengan Sniper AI...")
+        sent_msg = bot.send_message(message.chat.id, f"🔍 Menganalisis **{symbol}**...")
         res = call_binance_api(f"/api/v3/ticker/24hr?symbol={symbol}")
         
         if res and 'lastPrice' in res:
             sig = get_ai_analysis(res)
             if sig:
                 if sig.get('signal') == "WAIT":
-                    bot.edit_message_text(f"☕ **{symbol}**: AI menyarankan **WAIT**.", message.chat.id, sent_msg.message_id)
+                    bot.edit_message_text(f"☕ **{symbol}**: AI menyarankan **WAIT**. Belum ada setup sniper.", message.chat.id, sent_msg.message_id)
                 else:
                     bot.delete_message(message.chat.id, sent_msg.message_id)
                     send_signal_ui(sig, message.chat.id)
             else:
-                bot.edit_message_text(f"❌ Gagal analisis {symbol}. Data mungkin tidak cukup.", message.chat.id, sent_msg.message_id)
+                bot.edit_message_text(f"⚠️ **{symbol}**: Data history tidak cukup atau AI sibuk.", message.chat.id, sent_msg.message_id)
         else:
             bot.edit_message_text(f"❌ Pair **{symbol}** tidak ditemukan di Binance Spot.", message.chat.id, sent_msg.message_id)
-    except Exception as e:
-        bot.send_message(message.chat.id, f"⚠️ Error: {str(e)}")
+    except: pass
 
-# --- MONITORING & SCANNER ---
+# --- MONITORING ---
 def monitor_active_signals():
     global ACTIVE_SIGNALS, COOLDOWN_COINS
     while True:
         try:
             for sig in ACTIVE_SIGNALS[:]:
-                symbol = sig['symbol']
+                symbol, entry, side = sig['symbol'], float(sig['entry']), sig['signal'].upper()
                 res = call_binance_api(f"/api/v3/ticker/price?symbol={symbol}")
                 if not res: continue
                 curr_price = float(res['price'])
-                entry = float(sig['entry'])
-                side = sig['signal'].upper()
                 
                 is_hit = False
                 if (side == "LONG" and curr_price <= float(sig['sl'])) or (side == "SHORT" and curr_price >= float(sig['sl'])):
                     bot.send_message(CHAT_ID, f"🛑 **SL HIT**\n#{symbol}\nPrice: {format_price(curr_price)}")
                     is_hit = True
                 elif (side == "LONG" and curr_price >= float(sig['tp3'])) or (side == "SHORT" and curr_price <= float(sig['tp3'])):
-                    bot.send_message(CHAT_ID, f"🎯 **TP3 HIT (MAX)**\n#{symbol}\nROI: {calculate_roi(entry, curr_price, side):.1f}%")
+                    bot.send_message(CHAT_ID, f"🎯 **TP3 HIT**\n#{symbol}\nROI: {calculate_roi(entry, curr_price, side):.1f}%")
                     is_hit = True
 
                 if is_hit:
@@ -217,6 +198,7 @@ def monitor_active_signals():
             time.sleep(60) 
         except: time.sleep(60)
 
+# --- SCANNER (SPEED OPTIMIZED) ---
 def run_scanner():
     global COOLDOWN_COINS
     print(f"🔍 Multi-TF Sniper Scan: {datetime.now(timezone.utc)}")
@@ -227,44 +209,40 @@ def run_scanner():
     COOLDOWN_COINS = {k: v for k, v in COOLDOWN_COINS.items() if v > now}
     valid = [c for c in res if c['symbol'].endswith("USDT") and c['symbol'] not in STABLE_COINS and float(c['quoteVolume']) > 10000000]
     
-    gainers = sorted(valid, key=lambda x: float(x['priceChangePercent']), reverse=True)[:5]
-    losers = sorted(valid, key=lambda x: float(x['priceChangePercent']))[:5]
-    trending = sorted(valid, key=lambda x: float(x['quoteVolume']), reverse=True)[:5]
-    
-    targets = {t['symbol']: t for t in (gainers + losers + trending)}.values()
+    targets = sorted(valid, key=lambda x: float(x['priceChangePercent']), reverse=True)[:5] + \
+              sorted(valid, key=lambda x: float(x['priceChangePercent']))[:5]
     
     for t in targets:
         symbol = t['symbol']
         try:
-            if any(s['symbol'] == symbol for s in ACTIVE_SIGNALS): continue
-            if symbol in COOLDOWN_COINS: continue
+            if any(s['symbol'] == symbol for s in ACTIVE_SIGNALS) or symbol in COOLDOWN_COINS: continue
             
             sig = get_ai_analysis(t)
+            
+            # Jika AI berhasil memberikan sinyal (bukan None karena kurang data)
             if sig:
                 send_signal_ui(sig, CHAT_ID)
+                # Hanya beri jeda jika benar-benar mengirim sinyal untuk menjaga Rate Limit AI
                 time.sleep(15) 
+            # Jika sig adalah None, loop akan langsung lanjut ke koin berikutnya tanpa menunggu
         except: continue
 
-# --- HANDLERS ---
+# --- MAIN ---
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
-    bot.send_message(message.chat.id, "🚀 **Sniper SMC Pro Online**", reply_markup=main_menu())
-
-def main_menu():
     markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     markup.add(KeyboardButton("🔍 Scan Market Sekarang"), KeyboardButton("📊 Status Bot"))
-    return markup
+    bot.send_message(message.chat.id, "🚀 **Multi-TF Sniper Online**", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text == "🔍 Scan Market Sekarang")
 def manual_scan_btn(message):
-    bot.reply_to(message, "🔄 Memulai scan Multi-TF...")
+    bot.reply_to(message, "🔄 Menjalankan Sniper Scan...")
     threading.Thread(target=run_scanner).start()
 
 @bot.message_handler(func=lambda m: m.text == "📊 Status Bot")
 def status_btn(message):
     total = len(ACTIVE_SIGNALS)
-    pairs = ", ".join([s['symbol'] for s in ACTIVE_SIGNALS]) if ACTIVE_SIGNALS else "None"
-    bot.send_message(message.chat.id, f"🟢 **Status: Online**\n🎯 Signals: {total}\n🪙 Monitoring: {pairs}")
+    bot.send_message(message.chat.id, f"🟢 **Bot Online**\n🎯 Signals: {total}")
 
 if __name__ == "__main__":
     threading.Thread(target=monitor_active_signals, daemon=True).start()
