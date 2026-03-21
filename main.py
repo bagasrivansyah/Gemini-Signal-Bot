@@ -28,13 +28,11 @@ STABLE_COINS = ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "DAIUSDT", "AEURUSDT", "EUR
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 # TETAPKAN STRUKTUR BOT ASLI DENGAN MULTI-THREADING
-bot = telebot.TeleBot(TOKEN_TELEGRAM, threaded=True, num_threads=20)
+bot = telebot.TeleBot(TOKEN_TELEGRAM, threaded=True, num_threads=15)
 client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 # --- FUNGSI PROTEKSI (Lock System) ---
 def is_authorized(uid):
-    # Jika variabel WHITELIST_IDS di Railway kosong, bot bisa diakses semua orang (publik)
-    # Jika diisi, hanya yang terdaftar yang bisa akses
     if not WHITELIST_IDS: return True
     return uid in WHITELIST_IDS
 
@@ -102,17 +100,32 @@ def get_ai_analysis(coin_data):
     tf_data = get_multi_tf_technical(symbol)
     if tf_data == "INSUFFICIENT" or tf_data is None: return "SKIP"
 
+    # --- MEMORY LEARNING DARI RAM ---
     learning_log = ""
     if TRADE_HISTORY:
         recent = TRADE_HISTORY[-5:]
-        learning_log = "\n[PAST VECTOR PERFORMANCE]:\n" + "\n".join([f"- {r['symbol']}: {r['status']}" for r in recent])
+        learning_log = "\n[PAST PERFORMANCE CONTEXT]:\n" + "\n".join([f"- {r['symbol']}: {r['status']} ({r['roi']:+.1f}%)" for r in recent])
 
     prompt = f"""
-    Role: Lead Quantitative Researcher. Object: {symbol} at {format_price(price)}.
-    Matrix: 4H Trend {tf_data['trend_4h']}, 1H Volatility Matrix.
+    Role: Lead Quantitative Researcher at Hedge Fund.
+    System Status: Analyze {symbol} at {format_price(price)}.
+    Matrix: 4H Trend {tf_data['trend_4h']}, 1H Price Action.
     {learning_log}
-    Task: Sniper Signal JSON: signal(LONG/SHORT/WAIT), entry, tp1, tp2, tp3, sl, probability, reason.
-    Logic: AMD Architecture, Fibonacci 1.618, WinProb > 80%, No scientific notation.
+
+    Task: Berikan Sniper Signal berbasis Machine Learning SMC & Quantitative Model.
+    
+    Logic Protocols:
+    1. Threshold: Confidence Score > 85%. Evaluasi history trade di atas untuk kalibrasi.
+    2. Architecture: Gunakan skema AMD (Accumulation-Manipulation-Distribution).
+    3. Exit Strategy: Gunakan Fibonacci 1.618 Golden Extensions.
+    4. NO Scientific Notation.
+    
+    Output JSON ONLY:
+    {{
+        "symbol": "{symbol}", "signal": "LONG/SHORT/WAIT", "entry": {price},
+        "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "probability": 88,
+        "reason": "Expert SMC terminology (MSS, Liquidity swept, Premium zones)."
+    }}
     """
     try:
         completion = client_groq.chat.completions.create(
@@ -157,7 +170,7 @@ def send_signal_ui(sig_data, target_chat):
         f"  └─ `{format_price(sl)}` (Isolated 20x)\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📝 **NEURAL REASONING:**\n"
-        f"_{sig_data.get('reason', 'Market alignment confirmed.')}_\n\n"
+        f"_{sig_data.get('reason', 'Market Inefficiency detected.')}_\n\n"
         f"🔗 [ACCESS REAL-TIME DATA HUB]({tv_link})\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"**SMC GLOBAL • INSTITUTIONAL GRADE**"
@@ -175,6 +188,7 @@ def monitor_active_signals():
             for sig in ACTIVE_SIGNALS[:]:
                 symbol, entry, side = sig['symbol'], float(sig['entry']), sig['signal'].upper()
                 tp1, tp2, tp3, sl = float(sig['tp1']), float(sig['tp2']), float(sig['tp3']), float(sig['sl'])
+                
                 res = call_binance_api(f"/api/v3/ticker/price?symbol={symbol}")
                 if not res: continue
                 curr = float(res['price'])
@@ -236,7 +250,7 @@ def run_scanner():
             send_signal_ui(sig, CHAT_ID)
             time.sleep(15) 
 
-# --- HANDLERS (WITH LOCK SYSTEM) ---
+# --- HANDLERS ---
 @bot.message_handler(commands=['cek'])
 @bot.message_handler(func=lambda m: m.text.lower().startswith('cek'))
 def manual_check(message):
