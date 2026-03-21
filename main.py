@@ -14,7 +14,11 @@ TOKEN_TELEGRAM = os.getenv("TOKEN_TELEGRAM")
 CHAT_ID = os.getenv("CHAT_ID") or os.getenv("ID_CHAT_TELEGRAM")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# --- STORAGE DI RAM (RESET JIKA RESTART) ---
+# --- KEAMANAN: WHITELIST SYSTEM (OS VAR) ---
+RAW_WHITELIST = os.getenv("WHITELIST_IDS", "")
+WHITELIST_IDS = [int(i.strip()) for i in RAW_WHITELIST.split(",") if i.strip().isdigit()]
+# ------------------------------------------
+
 ACTIVE_SIGNALS = []
 TRADE_HISTORY = [] 
 COOLDOWN_COINS = {} 
@@ -23,9 +27,27 @@ LEVERAGE = 20
 STABLE_COINS = ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "DAIUSDT", "AEURUSDT", "EURUSDT", "GBPUSDT", "BUSDUSDT", "USDPUSDT", "USD1USDT", "USDTUSDT"]
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
-# AKTIFKAN MULTI-THREADING PADA BOT
+# TETAPKAN STRUKTUR BOT ASLI DENGAN MULTI-THREADING
 bot = telebot.TeleBot(TOKEN_TELEGRAM, threaded=True, num_threads=20)
 client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+
+# --- FUNGSI PROTEKSI (Lock System) ---
+def is_authorized(uid):
+    # Jika variabel WHITELIST_IDS di Railway kosong, bot bisa diakses semua orang (publik)
+    # Jika diisi, hanya yang terdaftar yang bisa akses
+    if not WHITELIST_IDS: return True
+    return uid in WHITELIST_IDS
+
+def denied_access(message):
+    msg = (
+        f"╔══════════════════════╗\n"
+        f"    **SYSTEM ACCESS DENIED**\n"
+        f"╚══════════════════════╝\n\n"
+        f"🔴 **CRITICAL:** ID `{message.from_user.id}` is unregistered.\n"
+        f"⚠️ This terminal is encrypted for VIP members only.\n"
+        f"Please contact the administrator for access."
+    )
+    bot.reply_to(message, msg, parse_mode="Markdown")
 
 # --- HELPER: HITUNG ROI ---
 def calculate_roi(entry, target, side):
@@ -59,13 +81,10 @@ def get_multi_tf_technical(symbol):
     try:
         data_4h = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=4h&limit=15")
         data_1h = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=1h&limit=30")
-        
         if not data_4h or len(data_4h) < 6 or not data_1h or len(data_1h) < 2:
             return "INSUFFICIENT"
-
         c4h = [{"c": float(x[4])} for x in data_4h]
         trend_4h = "BULLISH" if c4h[-1]['c'] > c4h[-5]['c'] else "BEARISH"
-        
         c1h = [{"c": float(x[4]), "h": float(x[2]), "l": float(x[3])} for x in data_1h]
         return {
             "trend_4h": trend_4h,
@@ -83,31 +102,17 @@ def get_ai_analysis(coin_data):
     tf_data = get_multi_tf_technical(symbol)
     if tf_data == "INSUFFICIENT" or tf_data is None: return "SKIP"
 
-    # Memory Learning (RAM)
     learning_log = ""
     if TRADE_HISTORY:
         recent = TRADE_HISTORY[-5:]
         learning_log = "\n[PAST VECTOR PERFORMANCE]:\n" + "\n".join([f"- {r['symbol']}: {r['status']}" for r in recent])
 
     prompt = f"""
-    Role: Lead Quantitative Researcher at Hedge Fund.
-    System Status: Analyze {symbol} at {format_price(price)}.
+    Role: Lead Quantitative Researcher. Object: {symbol} at {format_price(price)}.
     Matrix: 4H Trend {tf_data['trend_4h']}, 1H Volatility Matrix.
     {learning_log}
-
-    Task: Berikan Sniper Signal berbasis Machine Learning SMC.
-    Logic Protocols:
-    1. Threshold: Confidence Score > 85%.
-    2. Architecture: Gunakan skema AMD (Accumulation-Manipulation-Distribution).
-    3. Exit: Gunakan Fibonacci 1.618 Extension.
-    4. Cek History: Jika trade terakhir LOSS, gunakan filter 2x lebih ketat.
-    
-    Output JSON ONLY:
-    {{
-        "symbol": "{symbol}", "signal": "LONG/SHORT/WAIT", "entry": {price},
-        "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "probability": 88,
-        "reason": "Expert SMC terminology (MSS, Liquidity swept, Premium zones)."
-    }}
+    Task: Sniper Signal JSON: signal(LONG/SHORT/WAIT), entry, tp1, tp2, tp3, sl, probability, reason.
+    Logic: AMD Architecture, Fibonacci 1.618, WinProb > 80%, No scientific notation.
     """
     try:
         completion = client_groq.chat.completions.create(
@@ -152,7 +157,7 @@ def send_signal_ui(sig_data, target_chat):
         f"  └─ `{format_price(sl)}` (Isolated 20x)\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📝 **NEURAL REASONING:**\n"
-        f"_{sig_data.get('reason', 'Market Inefficiency detected.')}_\n\n"
+        f"_{sig_data.get('reason', 'Market alignment confirmed.')}_\n\n"
         f"🔗 [ACCESS REAL-TIME DATA HUB]({tv_link})\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"**SMC GLOBAL • INSTITUTIONAL GRADE**"
@@ -170,7 +175,6 @@ def monitor_active_signals():
             for sig in ACTIVE_SIGNALS[:]:
                 symbol, entry, side = sig['symbol'], float(sig['entry']), sig['signal'].upper()
                 tp1, tp2, tp3, sl = float(sig['tp1']), float(sig['tp2']), float(sig['tp3']), float(sig['sl'])
-                
                 res = call_binance_api(f"/api/v3/ticker/price?symbol={symbol}")
                 if not res: continue
                 curr = float(res['price'])
@@ -232,10 +236,11 @@ def run_scanner():
             send_signal_ui(sig, CHAT_ID)
             time.sleep(15) 
 
-# --- HANDLERS (CEK, START, STATUS) ---
+# --- HANDLERS (WITH LOCK SYSTEM) ---
 @bot.message_handler(commands=['cek'])
 @bot.message_handler(func=lambda m: m.text.lower().startswith('cek'))
 def manual_check(message):
+    if not is_authorized(message.from_user.id): return denied_access(message)
     try:
         parts = message.text.split()
         if len(parts) < 2: return
@@ -253,17 +258,20 @@ def manual_check(message):
 
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
+    if not is_authorized(message.from_user.id): return denied_access(message)
     markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     markup.add(KeyboardButton("🛰️ INITIATE SCAN"), KeyboardButton("🖥️ CORE STATUS"))
     bot.send_message(message.chat.id, "⚡ **NEXUS QUANTUM CORE ONLINE**", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text == "🛰️ INITIATE SCAN")
 def manual_scan(message):
+    if not is_authorized(message.from_user.id): return denied_access(message)
     bot.reply_to(message, "🔄 `INITIATING_ASYNC_SCANNER...`")
     threading.Thread(target=run_scanner).start()
 
 @bot.message_handler(func=lambda m: m.text == "🖥️ CORE STATUS")
 def status_btn(message):
+    if not is_authorized(message.from_user.id): return denied_access(message)
     bot.send_message(message.chat.id, f"🟢 **SYSTEM DIAGNOSTICS: OPTIMAL**\n🎯 Signals Monitored: {len(ACTIVE_SIGNALS)}")
 
 if __name__ == "__main__":
