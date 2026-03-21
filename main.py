@@ -74,7 +74,7 @@ def get_multi_tf_technical(symbol):
         }
     except: return None
 
-# --- AI SNIPER ENGINE (PERSONA PRO) ---
+# --- UPDATE: AI SNIPER ENGINE (QUANT & LEARNING) ---
 def get_ai_analysis(coin_data):
     if not client_groq: return None
     symbol = coin_data.get('symbol')
@@ -83,20 +83,46 @@ def get_ai_analysis(coin_data):
     tf_data = get_multi_tf_technical(symbol)
     if tf_data == "INSUFFICIENT" or tf_data is None: return "SKIP"
 
+    # PROMPT TERBARU: QUANTITATIVE ANALYSIST & MACHINE LEARNING MODEL
     prompt = f"""
-    Role: World-Class Institutional Sniper Trader (SMC/ICT Expert). 10+ years experience. Winrate 90%.
-    Analisa koin {symbol} pada harga {format_price(price)}. 4H Trend: {tf_data['trend_4h']}.
-    Task: Berikan Sniper Signal JSON: symbol, signal(LONG/SHORT/WAIT), entry, tp1, tp2, tp3, sl, reason. 
-    Wajib sejalan trend 4H. RR 1:2. No scientific notation.
+    Role: Senior Quantitative Analyst & Machine Learning Trading Engine.
+    Object: {symbol} at {format_price(price)}.
+    
+    Technical Quantitative Data:
+    - 4H Institutional Trend: {tf_data['trend_4h']}
+    - 1H Current Price: {format_price(tf_data['price_1h'])}
+    - 24h Statistical Range: {format_price(tf_data['low_24h'])} to {format_price(tf_data['high_24h'])}
+    - Predictive Model: Cross-referencing 4H Trend with 1H Order Flow.
+
+    Task:
+    Jalankan algoritma Quantum Quant untuk mendeteksi market inefficiency (FVG) dan Liquidity Cluster (Order Block).
+    
+    Protokol Quant Wajib:
+    1. Win Probability Analysis: Berikan sinyal hanya jika probabilitas keberhasilan model > 75%. Jika di bawah itu, return "WAIT".
+    2. Market Phase Detection: Identifikasi fase 'Accumulation', 'Manipulation', atau 'Distribution' (AMD).
+    3. Quantitative Exits: TP1, TP2, TP3 harus dihitung secara presisi berdasarkan Fibonacci Golden Ratio (0.618) atau Standard Deviation.
+    4. Risk Management: Stop Loss (SL) wajib di luar cluster likuiditas. Maksimal SL 2.5%.
+    5. No Scientific Notation: Tulis semua angka dalam desimal murni lengkap.
+
+    Output RAW JSON ONLY:
+    {{
+        "symbol": "{symbol}",
+        "signal": "LONG/SHORT/WAIT",
+        "entry": {price},
+        "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0,
+        "reason": "Probability (%), Market Phase (AMD), and Statistical Inefficiency logic."
+    }}
     """
     try:
         completion = client_groq.chat.completions.create(
             model=GROQ_MODEL, messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
-            timeout=20
+            timeout=25
         )
         return json.loads(completion.choices[0].message.content)
-    except: return None
+    except Exception as e:
+        print(f"❌ AI Error {symbol}: {e}")
+        return None
 
 # --- UI DISPLAY (STRUKTUR ASLI + LINK TRADING VIEW + ROI) ---
 def send_signal_ui(sig_data, target_chat):
@@ -192,7 +218,6 @@ def monitor_active_signals():
                 if is_hit:
                     msg = f"{status}\n━━━━━━━━━━━━━━\n🪙 #{symbol}\n📈 ROI: {roi:+.1f}%\n💵 Exit: {format_price(curr)}"
                     bot.send_message(CHAT_ID, msg)
-                    # Simpan ke history laporan harian
                     TRADE_HISTORY.append({"symbol": symbol, "roi": roi, "status": status})
                     COOLDOWN_COINS[symbol] = datetime.now(timezone.utc) + timedelta(hours=4)
                     ACTIVE_SIGNALS.remove(sig)
@@ -204,7 +229,6 @@ def daily_report_scheduler():
     global TRADE_HISTORY
     while True:
         now = datetime.now(timezone.utc)
-        # Kirim jam 00:00 UTC (07:00 WIB)
         if now.hour == 0 and now.minute == 0:
             if TRADE_HISTORY:
                 total_trades = len(TRADE_HISTORY)
@@ -222,7 +246,7 @@ def daily_report_scheduler():
                     f"Semoga hari ini lebih cuan!"
                 )
                 bot.send_message(CHAT_ID, report, parse_mode="Markdown")
-                TRADE_HISTORY = [] # Kosongkan untuk hari berikutnya
+                TRADE_HISTORY = [] 
             time.sleep(70)
         time.sleep(30)
 
@@ -236,7 +260,6 @@ def run_scanner():
     COOLDOWN_COINS = {k: v for k, v in COOLDOWN_COINS.items() if v > now}
     valid = [c for c in res if c['symbol'].endswith("USDT") and c['symbol'] not in STABLE_COINS and float(c['quoteVolume']) > 10000000]
     
-    # Ambil Gainer, Loser, Volume
     targets = sorted(valid, key=lambda x: float(x['priceChangePercent']), reverse=True)[:4] + \
               sorted(valid, key=lambda x: float(x['priceChangePercent']))[:4] + \
               sorted(valid, key=lambda x: float(x['quoteVolume']), reverse=True)[:2]
@@ -267,7 +290,6 @@ def status_btn(message):
     bot.send_message(message.chat.id, f"🟢 **Bot Online**\n🎯 Signals Monitored: {total}")
 
 if __name__ == "__main__":
-    # Jalankan Monitoring, Laporan Harian, dan Polling di thread terpisah
     threading.Thread(target=monitor_active_signals, daemon=True).start()
     threading.Thread(target=daily_report_scheduler, daemon=True).start()
     
