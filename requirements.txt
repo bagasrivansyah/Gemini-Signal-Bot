@@ -1,7 +1,6 @@
 pyTelegramBotAPI
 requests
-pandas
-pandas_ta
-google-genai
+pandas<3.0.0
+pandas-ta
 groq
 python-dotenv
