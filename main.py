@@ -28,7 +28,7 @@ STABLE_COINS = ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "DAIUSDT", "AEURUSDT", "EUR
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 # TETAPKAN STRUKTUR BOT ASLI DENGAN MULTI-THREADING
-bot = telebot.TeleBot(TOKEN_TELEGRAM, threaded=True, num_threads=20)
+bot = telebot.TeleBot(TOKEN_TELEGRAM, threaded=True, num_threads=15)
 client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 # --- FUNGSI PROTEKSI (Lock System) ---
@@ -46,7 +46,7 @@ def denied_access(message):
     )
     bot.reply_to(message, msg, parse_mode="Markdown")
 
-# --- HELPER: HITUNG ROI ---
+# --- HELPER: HITUNG ROI & FORMAT ---
 def calculate_roi(entry, target, side):
     try:
         entry, target = float(entry), float(target)
@@ -55,7 +55,6 @@ def calculate_roi(entry, target, side):
         return (diff / entry) * 100 * LEVERAGE
     except: return 0
 
-# --- HELPER: FORMAT HARGA (ANTY MICIN) ---
 def format_price(val):
     try:
         if val is None or float(val) == 0: return "0"
@@ -98,11 +97,10 @@ def get_ai_analysis(coin_data):
     tf_data = get_multi_tf_technical(symbol)
     if tf_data == "INSUFFICIENT" or tf_data is None: return "SKIP"
 
-    # Memory Learning (RAM)
     learning_log = ""
     if TRADE_HISTORY:
         recent = TRADE_HISTORY[-5:]
-        learning_log = "\n[PAST VECTOR PERFORMANCE]:\n" + "\n".join([f"- {r['symbol']}: {r['status']} ({r['roi']:+.1f}%)" for r in recent])
+        learning_log = "\n[PAST PERFORMANCE CONTEXT]:\n" + "\n".join([f"- {r['symbol']}: {r['status']} ({r['roi']:+.1f}%)" for r in recent])
 
     prompt = f"""
     Role: Lead Quantitative Researcher at Hedge Fund.
@@ -113,16 +111,16 @@ def get_ai_analysis(coin_data):
     Task: Berikan Sniper Signal berbasis Machine Learning SMC & Quantitative Model.
     
     Logic Protocols:
-    1. Dynamic Confidence: Hitung skor probabilitas unik (Range 81% - 99%). DILARANG menggunakan angka statis (seperti 88) terus-menerus.
-    2. Architecture: Gunakan skema AMD (Accumulation-Manipulation-Distribution).
-    3. Exit Strategy: Fibonacci 1.618 Golden Extensions.
-    4. Cek History: Jika trade terakhir banyak LOSS, gunakan filter 2x lebih ketat (High Probability only).
+    1. Dynamic Confidence: Hitung skor probabilitas unik (Range 81% - 99%). JANGAN memberikan angka 88 terus-menerus.
+    2. Architecture: AMD Logic. JANGAN entry di harga sekarang jika sedang impulse. Cari area 'Discount' untuk entry.
+    3. Exit Strategy: Gunakan Fibonacci 1.618 Golden Extensions. TP1 wajib sangat realistis.
+    4. NO Scientific Notation.
     
     Output JSON ONLY:
     {{
         "symbol": "{symbol}", "signal": "LONG/SHORT/WAIT", "entry": {price},
         "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "probability": 0,
-        "reason": "Expert SMC terminology (MSS, Liquidity swept, Premium zones)."
+        "reason": "Expert SMC terminology."
     }}
     """
     try:
@@ -130,7 +128,7 @@ def get_ai_analysis(coin_data):
         return json.loads(completion.choices[0].message.content)
     except: return None
 
-# --- UI DISPLAY (BLACK-BOX EDITION) ---
+# --- UI DISPLAY (BLACK-BOX EDITION - FIXED METER) ---
 def send_signal_ui(sig_data, target_chat):
     if not sig_data or sig_data == "SKIP": return
     symbol = sig_data.get('symbol')
@@ -140,8 +138,16 @@ def send_signal_ui(sig_data, target_chat):
 
     roi1, roi2, roi3 = calculate_roi(entry, tp1, side), calculate_roi(entry, tp2, side), calculate_roi(entry, tp3, side)
     side_label = "▲ BULLISH VECTOR" if side == "LONG" else "▼ BEARISH VECTOR"
-    prob = sig_data.get('probability', 85)
-    meter = "⬥" * (prob // 10) + "⬦" * (10 - (prob // 10))
+    
+    # FIX: Pastikan probabilitas adalah Integer agar tidak crash saat perkalian string
+    try:
+        prob = int(float(sig_data.get('probability', 85)))
+    except:
+        prob = 85
+    
+    meter_fill = int(prob // 10)
+    meter = "⬥" * meter_fill + "⬦" * (10 - meter_fill)
+    
     tv_link = f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}"
 
     msg = (
@@ -172,7 +178,7 @@ def send_signal_ui(sig_data, target_chat):
     bot.send_message(target_chat, msg, parse_mode="Markdown", disable_web_page_preview=False)
     if not any(s.get('symbol') == symbol for s in ACTIVE_SIGNALS): ACTIVE_SIGNALS.append(sig_data)
 
-# --- MONITORING: TP1-2-3 & SL ---
+# --- MONITORING: TP1, TP2, TP3 & SL ---
 def monitor_active_signals():
     global ACTIVE_SIGNALS, TRADE_HISTORY, COOLDOWN_COINS
     while True:
@@ -201,7 +207,7 @@ def monitor_active_signals():
                     TRADE_HISTORY.append({"symbol": symbol, "roi": roi, "status": status, "timestamp": datetime.now(timezone.utc).isoformat()})
                     COOLDOWN_COINS[symbol] = datetime.now(timezone.utc) + timedelta(hours=4)
                     ACTIVE_SIGNALS.remove(sig)
-            time.sleep(60)
+            time.sleep(60) 
         except: time.sleep(60)
 
 # --- DAILY REPORT ---
@@ -250,7 +256,7 @@ def manual_check(message):
             sig = get_ai_analysis(res)
             bot.delete_message(message.chat.id, sent_msg.message_id)
             if sig == "SKIP" or not sig: bot.send_message(message.chat.id, f"⚠️ `INSUFFICIENT_DATA:` {symbol}")
-            else: send_signal_ui(sig, message.chat.id)
+            elif sig: send_signal_ui(sig, message.chat.id)
         else: bot.send_message(message.chat.id, f"❌ `IDENTIFIER_NOT_FOUND:` {symbol}")
     except: pass
 
