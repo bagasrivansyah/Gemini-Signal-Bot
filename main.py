@@ -93,13 +93,24 @@ def get_ai_analysis(coin_data):
     if tf_data == "INSUFFICIENT" or tf_data is None: return "SKIP"
 
     learning_log = ""
+    win_rate = 0
     if TRADE_HISTORY:
         recent = TRADE_HISTORY[-5:]
         learning_log = "\n[PAST PERFORMANCE CONTEXT]:\n" + "\n".join([f"- {r['symbol']}: {r['status']} ({r['roi']:+.1f}%)" for r in recent])
         wins = [t for t in TRADE_HISTORY if t['roi'] > 0]
-    losses = [t for t in TRADE_HISTORY if t['roi'] <= 0]
+        win_rate = (len(wins) / len(TRADE_HISTORY)) * 100
 
-    win_rate = (len(wins) / len(TRADE_HISTORY)) * 100 if TRADE_HISTORY else 0
+    # FIX SYNTAX: Definisikan adaptive_context di luar variabel prompt
+    adaptive_context = f"""
+    [QUANT LEARNING METRICS]
+    - Total Trades: {len(TRADE_HISTORY)}
+    - Win Rate: {win_rate:.1f}%
+    - Recent Bias: {"BULLISH" if win_rate > 55 else "DEFENSIVE"}
+
+    [ADAPTIVE RULE]
+    - Jika winrate rendah → hindari entry agresif
+    - Fokus high probability setup saja
+    """
 
     prompt = f"""
     Role: Lead Quantitative Researcher at Hedge Fund.
@@ -115,16 +126,7 @@ def get_ai_analysis(coin_data):
     3. Exit Strategy: Fibonacci 1.618.
     4. NO Scientific Notation.
     
-    adaptive_context = f"""
-    [QUANT LEARNING METRICS]
-    - Total Trades: {len(TRADE_HISTORY)}
-    - Win Rate: {win_rate:.1f}%
-    - Recent Bias: {"BULLISH" if win_rate > 55 else "DEFENSIVE"}
-
-    [ADAPTIVE RULE]
-    - Jika winrate rendah → hindari entry agresif
-    - Fokus high probability setup saja
-    """
+    {adaptive_context}
     
     Output JSON ONLY:
     {{
