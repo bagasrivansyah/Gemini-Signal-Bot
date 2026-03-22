@@ -17,8 +17,8 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # --- KEAMANAN: WHITELIST SYSTEM (OS VAR) ---
 RAW_WHITELIST = os.getenv("WHITELIST_IDS", "")
 WHITELIST_IDS = [int(i.strip()) for i in RAW_WHITELIST.split(",") if i.strip().isdigit()]
-# ------------------------------------------
 
+# --- STORAGE DI RAM (RESET JIKA RESTART) ---
 ACTIVE_SIGNALS = []
 TRADE_HISTORY = [] 
 COOLDOWN_COINS = {} 
@@ -28,7 +28,7 @@ STABLE_COINS = ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "DAIUSDT", "AEURUSDT", "EUR
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 # TETAPKAN STRUKTUR BOT ASLI DENGAN MULTI-THREADING
-bot = telebot.TeleBot(TOKEN_TELEGRAM, threaded=True, num_threads=15)
+bot = telebot.TeleBot(TOKEN_TELEGRAM, threaded=True, num_threads=20)
 client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 # --- FUNGSI PROTEKSI (Lock System) ---
@@ -42,8 +42,7 @@ def denied_access(message):
         f"    **SYSTEM ACCESS DENIED**\n"
         f"╚══════════════════════╝\n\n"
         f"🔴 **CRITICAL:** ID `{message.from_user.id}` is unregistered.\n"
-        f"⚠️ This terminal is encrypted for VIP members only.\n"
-        f"Please contact the administrator for access."
+        f"⚠️ This terminal is encrypted for VIP members only."
     )
     bot.reply_to(message, msg, parse_mode="Markdown")
 
@@ -92,19 +91,18 @@ def get_multi_tf_technical(symbol):
         }
     except: return None
 
-# --- AI SNIPER ENGINE (QUANT LEARNING) ---
+# --- AI SNIPER ENGINE (QUANT & LEARNING TERVALIDASI) ---
 def get_ai_analysis(coin_data):
     if not client_groq: return None
-    symbol = coin_data.get('symbol')
-    price = float(coin_data.get('lastPrice') or coin_data.get('price', 0))
+    symbol, price = coin_data.get('symbol'), float(coin_data.get('lastPrice') or coin_data.get('price', 0))
     tf_data = get_multi_tf_technical(symbol)
     if tf_data == "INSUFFICIENT" or tf_data is None: return "SKIP"
 
-    # --- MEMORY LEARNING DARI RAM ---
+    # Memory Learning (RAM)
     learning_log = ""
     if TRADE_HISTORY:
         recent = TRADE_HISTORY[-5:]
-        learning_log = "\n[PAST PERFORMANCE CONTEXT]:\n" + "\n".join([f"- {r['symbol']}: {r['status']} ({r['roi']:+.1f}%)" for r in recent])
+        learning_log = "\n[PAST VECTOR PERFORMANCE]:\n" + "\n".join([f"- {r['symbol']}: {r['status']} ({r['roi']:+.1f}%)" for r in recent])
 
     prompt = f"""
     Role: Lead Quantitative Researcher at Hedge Fund.
@@ -115,23 +113,20 @@ def get_ai_analysis(coin_data):
     Task: Berikan Sniper Signal berbasis Machine Learning SMC & Quantitative Model.
     
     Logic Protocols:
-    1. Threshold: Confidence Score > 85%. Evaluasi history trade di atas untuk kalibrasi.
+    1. Dynamic Confidence: Hitung skor probabilitas unik (Range 81% - 99%). DILARANG menggunakan angka statis (seperti 88) terus-menerus.
     2. Architecture: Gunakan skema AMD (Accumulation-Manipulation-Distribution).
-    3. Exit Strategy: Gunakan Fibonacci 1.618 Golden Extensions.
-    4. NO Scientific Notation.
+    3. Exit Strategy: Fibonacci 1.618 Golden Extensions.
+    4. Cek History: Jika trade terakhir banyak LOSS, gunakan filter 2x lebih ketat (High Probability only).
     
     Output JSON ONLY:
     {{
         "symbol": "{symbol}", "signal": "LONG/SHORT/WAIT", "entry": {price},
-        "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "probability": 88,
+        "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "probability": 0,
         "reason": "Expert SMC terminology (MSS, Liquidity swept, Premium zones)."
     }}
     """
     try:
-        completion = client_groq.chat.completions.create(
-            model=GROQ_MODEL, messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}, timeout=25
-        )
+        completion = client_groq.chat.completions.create(model=GROQ_MODEL, messages=[{"role": "user", "content": prompt}], response_format={"type": "json_object"}, timeout=25)
         return json.loads(completion.choices[0].message.content)
     except: return None
 
@@ -141,7 +136,6 @@ def send_signal_ui(sig_data, target_chat):
     symbol = sig_data.get('symbol')
     side = str(sig_data.get('signal', 'WAIT')).upper()
     entry, tp1, tp2, tp3, sl = sig_data.get('entry', 0), sig_data.get('tp1', 0), sig_data.get('tp2', 0), sig_data.get('tp3', 0), sig_data.get('sl', 0)
-
     if not symbol or side not in ['LONG', 'SHORT'] or entry == 0: return
 
     roi1, roi2, roi3 = calculate_roi(entry, tp1, side), calculate_roi(entry, tp2, side), calculate_roi(entry, tp3, side)
@@ -170,17 +164,15 @@ def send_signal_ui(sig_data, target_chat):
         f"  └─ `{format_price(sl)}` (Isolated 20x)\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📝 **NEURAL REASONING:**\n"
-        f"_{sig_data.get('reason', 'Market Inefficiency detected.')}_\n\n"
+        f"_{sig_data.get('reason', 'Market alignment confirmed.')}_\n\n"
         f"🔗 [ACCESS REAL-TIME DATA HUB]({tv_link})\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"**SMC GLOBAL • INSTITUTIONAL GRADE**"
     )
     bot.send_message(target_chat, msg, parse_mode="Markdown", disable_web_page_preview=False)
-    
-    if not any(s.get('symbol') == symbol for s in ACTIVE_SIGNALS):
-        ACTIVE_SIGNALS.append(sig_data)
+    if not any(s.get('symbol') == symbol for s in ACTIVE_SIGNALS): ACTIVE_SIGNALS.append(sig_data)
 
-# --- MONITORING: TP1, TP2, TP3 & SL ---
+# --- MONITORING: TP1-2-3 & SL ---
 def monitor_active_signals():
     global ACTIVE_SIGNALS, TRADE_HISTORY, COOLDOWN_COINS
     while True:
@@ -188,31 +180,28 @@ def monitor_active_signals():
             for sig in ACTIVE_SIGNALS[:]:
                 symbol, entry, side = sig['symbol'], float(sig['entry']), sig['signal'].upper()
                 tp1, tp2, tp3, sl = float(sig['tp1']), float(sig['tp2']), float(sig['tp3']), float(sig['sl'])
-                
                 res = call_binance_api(f"/api/v3/ticker/price?symbol={symbol}")
                 if not res: continue
-                curr = float(res['price'])
-                roi = calculate_roi(entry, curr, side)
+                curr, roi = float(res['price']), calculate_roi(entry, float(res['price']), side)
 
+                is_finished, status = False, ""
                 if (side == "LONG" and curr <= sl) or (side == "SHORT" and curr >= sl):
-                    bot.send_message(CHAT_ID, f"🛑 **VECTOR TERMINATED (SL)**\nAsset: #{symbol}\nExit: {format_price(curr)}\nROI: {roi:+.1f}%")
-                    TRADE_HISTORY.append({"symbol": symbol, "roi": roi, "status": "🛑 SL HIT", "timestamp": datetime.now(timezone.utc).isoformat()})
-                    COOLDOWN_COINS[symbol] = datetime.now(timezone.utc) + timedelta(hours=4)
-                    ACTIVE_SIGNALS.remove(sig)
+                    status, is_finished = "🛑 SL HIT", True
                 elif (side == "LONG" and curr >= tp3) or (side == "SHORT" and curr <= tp3):
-                    bot.send_message(CHAT_ID, f"🎯 **MAX TARGET REACHED (TP3)**\nAsset: #{symbol}\nExit: {format_price(curr)}\nROI: {roi:+.1f}%")
-                    TRADE_HISTORY.append({"symbol": symbol, "roi": roi, "status": "🎯 TP3 HIT", "timestamp": datetime.now(timezone.utc).isoformat()})
-                    COOLDOWN_COINS[symbol] = datetime.now(timezone.utc) + timedelta(hours=4)
-                    ACTIVE_SIGNALS.remove(sig)
+                    status, is_finished = "🎯 TP3 HIT", True
                 elif (side == "LONG" and curr >= tp2) or (side == "SHORT" and curr <= tp2):
                     if not sig.get('tp2_n'):
-                        bot.send_message(CHAT_ID, f"✅ **T2 CORRIDOR BREACHED**\nAsset: #{symbol}\nROI: {roi:+.1f}%")
-                        sig['tp2_n'] = True
+                        bot.send_message(CHAT_ID, f"✅ **T2 CORRIDOR BREACHED**\nAsset: #{symbol}\nROI: {roi:+.1f}%"); sig['tp2_n'] = True
                 elif (side == "LONG" and curr >= tp1) or (side == "SHORT" and curr <= tp1):
                     if not sig.get('tp1_n'):
-                        bot.send_message(CHAT_ID, f"✅ **T1 CORRIDOR BREACHED**\nAsset: #{symbol}\nROI: {roi:+.1f}%")
-                        sig['tp1_n'] = True
-            time.sleep(60) 
+                        bot.send_message(CHAT_ID, f"✅ **T1 CORRIDOR BREACHED**\nAsset: #{symbol}\nROI: {roi:+.1f}%"); sig['tp1_n'] = True
+
+                if is_finished:
+                    bot.send_message(CHAT_ID, f"{status}\n#{symbol}\nROI: {roi:+.1f}%\nExit: {format_price(curr)}")
+                    TRADE_HISTORY.append({"symbol": symbol, "roi": roi, "status": status, "timestamp": datetime.now(timezone.utc).isoformat()})
+                    COOLDOWN_COINS[symbol] = datetime.now(timezone.utc) + timedelta(hours=4)
+                    ACTIVE_SIGNALS.remove(sig)
+            time.sleep(60)
         except: time.sleep(60)
 
 # --- DAILY REPORT ---
@@ -224,10 +213,8 @@ def daily_report_scheduler():
             yesterday = now - timedelta(days=1)
             trades = [t for t in TRADE_HISTORY if datetime.fromisoformat(t['timestamp']) > yesterday]
             if trades:
-                total_roi = sum([t['roi'] for t in trades])
-                wr = (len([t for t in trades if t['roi'] > 0]) / len(trades)) * 100
-                report = f"📊 **NEXUS DAILY QUANT REPORT**\n━━━━━━━━━━━━━━\n✅ Vectors: {len(trades)}\n🏆 Accuracy: {wr:.1f}%\n💰 Total ROI: {total_roi:+.2f}%"
-                bot.send_message(CHAT_ID, report)
+                total_roi, wr = sum([t['roi'] for t in trades]), (len([t for t in trades if t['roi'] > 0]) / len(trades)) * 100
+                bot.send_message(CHAT_ID, f"📊 **NEXUS DAILY QUANT REPORT**\n━━━━━━━━━━━━━━\n✅ Vectors: {len(trades)}\n🏆 Accuracy: {wr:.1f}%\n💰 Total ROI: {total_roi:+.2f}%")
             time.sleep(70)
         time.sleep(30)
 
@@ -239,10 +226,7 @@ def run_scanner():
     now = datetime.now(timezone.utc)
     COOLDOWN_COINS = {k: v for k, v in COOLDOWN_COINS.items() if v > now}
     valid = [c for c in res if c['symbol'].endswith("USDT") and c['symbol'] not in STABLE_COINS and float(c['quoteVolume']) > 10000000]
-    targets = sorted(valid, key=lambda x: float(x['priceChangePercent']), reverse=True)[:4] + \
-              sorted(valid, key=lambda x: float(x['priceChangePercent']))[:4] + \
-              sorted(valid, key=lambda x: float(x['quoteVolume']), reverse=True)[:2]
-    
+    targets = sorted(valid, key=lambda x: float(x['priceChangePercent']), reverse=True)[:4] + sorted(valid, key=lambda x: float(x['priceChangePercent']))[:4] + sorted(valid, key=lambda x: float(x['quoteVolume']), reverse=True)[:2]
     for t in {v['symbol']:v for v in targets}.values():
         if any(s.get('symbol') == t['symbol'] for s in ACTIVE_SIGNALS) or t['symbol'] in COOLDOWN_COINS: continue
         sig = get_ai_analysis(t)
@@ -259,14 +243,14 @@ def manual_check(message):
         parts = message.text.split()
         if len(parts) < 2: return
         coin = "".join(re.findall(r'[A-Z0-9]', parts[1].upper()))
-        symbol = f"{coin}USDT" if not coin.endswith("USDT") else coin
+        symbol = f"{coin}USDT"
         sent_msg = bot.send_message(message.chat.id, f"🔍 `QUANTUM_SCANNING:` **{symbol}**...")
         res = call_binance_api(f"/api/v3/ticker/24hr?symbol={symbol}")
         if res:
             sig = get_ai_analysis(res)
             bot.delete_message(message.chat.id, sent_msg.message_id)
             if sig == "SKIP" or not sig: bot.send_message(message.chat.id, f"⚠️ `INSUFFICIENT_DATA:` {symbol}")
-            elif sig: send_signal_ui(sig, message.chat.id)
+            else: send_signal_ui(sig, message.chat.id)
         else: bot.send_message(message.chat.id, f"❌ `IDENTIFIER_NOT_FOUND:` {symbol}")
     except: pass
 
