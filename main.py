@@ -24,22 +24,12 @@ TRADE_HISTORY = []
 COOLDOWN_COINS = {} 
 LEVERAGE = 20
 
-# --- AI LEARNING CORE ---
-AI_MEMORY = {
-    "total_trades": 0,
-    "wins": 0,
-    "losses": 0,
-    "total_roi": 0.0,
-    "last_bias": "NEUTRAL"
-}
-
 STABLE_COINS = ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "DAIUSDT", "AEURUSDT", "EURUSDT", "GBPUSDT", "BUSDUSDT", "USDPUSDT", "USD1USDT", "USDTUSDT"]
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 bot = telebot.TeleBot(TOKEN_TELEGRAM, threaded=True, num_threads=15)
 client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# --- FUNGSI PROTEKSI ---
 def is_authorized(uid):
     if not WHITELIST_IDS: return True
     return uid in WHITELIST_IDS
@@ -54,7 +44,6 @@ def denied_access(message):
     )
     bot.reply_to(message, msg, parse_mode="Markdown")
 
-# --- HELPER ---
 def calculate_roi(entry, target, side):
     try:
         entry, target = float(entry), float(target)
@@ -73,18 +62,19 @@ def format_price(val):
     except: return str(val)
 
 def call_binance_api(endpoint):
+    url = f"https://api.binance.com{endpoint}"
     try:
-        r = requests.get(f"https://api.binance.com{endpoint}", timeout=10)
-        if r.status_code == 200: return r.json()
-    except: pass
+        response = requests.get(url, timeout=10) 
+        if response.status_code == 200: return response.json()
+    except: return None
     return None
 
-# --- TECHNICAL ---
 def get_multi_tf_technical(symbol):
     try:
         data_4h = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=4h&limit=15")
         data_1h = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=1h&limit=30")
-        if not data_4h or not data_1h: return "INSUFFICIENT"
+        if not data_4h or len(data_4h) < 6 or not data_1h or len(data_1h) < 2:
+            return "INSUFFICIENT"
         c4h = [{"c": float(x[4])} for x in data_4h]
         trend_4h = "BULLISH" if c4h[-1]['c'] > c4h[-5]['c'] else "BEARISH"
         c1h = [{"c": float(x[4]), "h": float(x[2]), "l": float(x[3])} for x in data_1h]
@@ -94,87 +84,66 @@ def get_multi_tf_technical(symbol):
             "high_24h": max([x['h'] for x in c1h]),
             "low_24h": min([x['l'] for x in c1h])
         }
-    except:
-        return None
+    except: return None
 
-# --- AI ENGINE (REAL LEARNING) ---
 def get_ai_analysis(coin_data):
     if not client_groq: return None
-
-    symbol = coin_data.get('symbol')
-    price = float(coin_data.get('lastPrice') or coin_data.get('price', 0))
-
+    symbol, price = coin_data.get('symbol'), float(coin_data.get('lastPrice') or coin_data.get('price', 0))
     tf_data = get_multi_tf_technical(symbol)
-    if tf_data == "INSUFFICIENT" or tf_data is None:
-        return "SKIP"
+    if tf_data == "INSUFFICIENT" or tf_data is None: return "SKIP"
 
-    # --- LEARNING LOG ---
     learning_log = ""
     if TRADE_HISTORY:
         recent = TRADE_HISTORY[-5:]
-        learning_log = "\n[PAST PERFORMANCE]:\n" + "\n".join(
-            [f"- {r['symbol']}: {r['status']} ({r['roi']:+.1f}%)" for r in recent]
-        )
+        learning_log = "\n[PAST PERFORMANCE CONTEXT]:\n" + "\n".join([f"- {r['symbol']}: {r['status']} ({r['roi']:+.1f}%)" for r in recent])
+        wins = [t for t in TRADE_HISTORY if t['roi'] > 0]
+    losses = [t for t in TRADE_HISTORY if t['roi'] <= 0]
 
-    # --- REAL AI LEARNING CORE ---
-    adaptive_context = ""
-    if AI_MEMORY["total_trades"] > 0:
-        winrate = (AI_MEMORY["wins"] / AI_MEMORY["total_trades"]) * 100
-        avg_roi = AI_MEMORY["total_roi"] / AI_MEMORY["total_trades"]
-
-        adaptive_context = f"""
-        [QUANT AI CORE]
-        Trades: {AI_MEMORY["total_trades"]}
-        WinRate: {winrate:.1f}%
-        AvgROI: {avg_roi:+.2f}%
-        Mode: {AI_MEMORY["last_bias"]}
-
-        Behavior:
-        - DEFENSIVE → Only high probability trades
-        - BALANCED → Normal execution
-        - AGGRESSIVE → Early entry allowed
-        """
+    win_rate = (len(wins) / len(TRADE_HISTORY)) * 100 if TRADE_HISTORY else 0
 
     prompt = f"""
-    Role: Lead Quantitative AI Trader.
-    Analyze {symbol} at {format_price(price)}.
-    Trend: {tf_data['trend_4h']}
-
+    Role: Lead Quantitative Researcher at Hedge Fund.
+    System Status: Analyze {symbol} at {format_price(price)}.
+    Matrix: 4H Trend {tf_data['trend_4h']}, 1H Price Action.
     {learning_log}
-    {adaptive_context}
 
-    Rules:
-    - Avoid impulse entries
-    - Use smart money concepts (liquidity, imbalance)
-    - TP based on realistic extension
-    - Probability must vary (80-99)
+    Task: Berikan Sniper Signal berbasis Machine Learning SMC & Quantitative Model.
+    
+    Logic Protocols:
+    1. Dynamic Confidence: Hitung skor probabilitas unik (Range 81% - 99%).
+    2. Architecture: AMD Logic. Cari area Discount.
+    3. Exit Strategy: Fibonacci 1.618.
+    4. NO Scientific Notation.
+    
+    adaptive_context = f"""
+    [QUANT LEARNING METRICS]
+    - Total Trades: {len(TRADE_HISTORY)}
+    - Win Rate: {win_rate:.1f}%
+    - Recent Bias: {"BULLISH" if win_rate > 55 else "DEFENSIVE"}
 
-    Output JSON:
+    [ADAPTIVE RULE]
+    - Jika winrate rendah → hindari entry agresif
+    - Fokus high probability setup saja
+    """
+    
+    Output JSON ONLY:
     {{
-        "symbol": "{symbol}",
-        "signal": "LONG/SHORT/WAIT",
-        "entry": {price},
-        "tp1": 0,
-        "tp2": 0,
-        "tp3": 0,
-        "sl": 0,
-        "probability": 0,
-        "reason": "SMC explanation"
+        "symbol": "{symbol}", "signal": "LONG/SHORT/WAIT", "entry": {price},
+        "tp1": 0, "tp2": 0, "tp3": 0, "sl": 0, "probability": 0,
+        "reason": "Expert SMC terminology."
     }}
     """
-
     try:
-        res = client_groq.chat.completions.create(
+        completion = client_groq.chat.completions.create(
             model=GROQ_MODEL,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             timeout=25
         )
-        return json.loads(res.choices[0].message.content)
+        return json.loads(completion.choices[0].message.content)
     except:
         return None
 
-# --- UI (TIDAK DIUBAH) ---
 def send_signal_ui(sig_data, target_chat):
     if not sig_data or sig_data == "SKIP": return
     symbol = sig_data.get('symbol')
@@ -184,15 +153,15 @@ def send_signal_ui(sig_data, target_chat):
 
     roi1, roi2, roi3 = calculate_roi(entry, tp1, side), calculate_roi(entry, tp2, side), calculate_roi(entry, tp3, side)
     side_label = "▲ BULLISH VECTOR" if side == "LONG" else "▼ BEARISH VECTOR"
-    
+
     try:
         prob = int(float(sig_data.get('probability', 85)))
     except:
         prob = 85
-    
+
     meter_fill = int(prob // 10)
     meter = "⬥" * meter_fill + "⬦" * (10 - meter_fill)
-    
+
     tv_link = f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}"
 
     msg = (
@@ -201,8 +170,11 @@ def send_signal_ui(sig_data, target_chat):
         f"╚══════════════════════╝\n\n"
         f"⬥ **IDENTIFIER:** `#{symbol}`\n"
         f"⬥ **EXECUTION:** `{side_label}`\n"
-        f"⬥ **ALGORITHM:** `Neural-SMC v4.0`\n"
-        f"⬥ **STRENGTH:** `[{meter}] {prob}%` \n"
+        f"⬥ **ALGORITHM:** `Neural-SMC v4.0 | AI-Quant Engine`\n"
+        f"⬥ **AI MODEL:** `LLaMA 3.3 Quant`\n"
+        f"⬥ **MARKET BIAS:** `{side}`\n"
+        f"⬥ **STRENGTH:** `[{meter}] {prob}%`\n"
+        f"⬥ **AI CONFIDENCE:** `{prob}% | Adaptive`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"┌─── **ENTRY CORRIDOR** ───┐\n"
         f"   ` {format_price(entry)} `\n"
@@ -214,97 +186,128 @@ def send_signal_ui(sig_data, target_chat):
         f"⬥ **RISK MITIGATION (SL)**\n"
         f"  └─ `{format_price(sl)}` (Isolated 20x)\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📝 **NEURAL REASONING:**\n"
-        f"_{sig_data.get('reason', 'Market alignment confirmed.')}_\n\n"
+        f"🧠 **AI QUANT ANALYSIS:**\n"
+        f"_{sig_data.get('reason', 'No data from model')}_\n\n"
         f"🔗 [ACCESS REAL-TIME DATA HUB]({tv_link})\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"**SMC GLOBAL • INSTITUTIONAL GRADE**"
     )
+
     bot.send_message(target_chat, msg, parse_mode="Markdown", disable_web_page_preview=False)
 
     if not any(s.get('symbol') == symbol for s in ACTIVE_SIGNALS):
         ACTIVE_SIGNALS.append(sig_data)
 
-# --- MONITOR (UPDATE LEARNING DI SINI) ---
 def monitor_active_signals():
     global ACTIVE_SIGNALS, TRADE_HISTORY, COOLDOWN_COINS
     while True:
         try:
             for sig in ACTIVE_SIGNALS[:]:
-                symbol = sig['symbol']
-                entry = float(sig['entry'])
-                side = sig['signal'].upper()
-                tp3 = float(sig['tp3'])
-                sl = float(sig['sl'])
-
+                symbol, entry, side = sig['symbol'], float(sig['entry']), sig['signal'].upper()
+                tp1, tp2, tp3, sl = float(sig['tp1']), float(sig['tp2']), float(sig['tp3']), float(sig['sl'])
                 res = call_binance_api(f"/api/v3/ticker/price?symbol={symbol}")
                 if not res: continue
+                curr, roi = float(res['price']), calculate_roi(entry, float(res['price']), side)
 
-                curr = float(res['price'])
-                roi = calculate_roi(entry, curr, side)
-
-                finished = False
-                status = ""
-
+                is_finished, status = False, ""
                 if (side == "LONG" and curr <= sl) or (side == "SHORT" and curr >= sl):
-                    status, finished = "🛑 SL HIT", True
+                    status, is_finished = "🛑 SL HIT", True
                 elif (side == "LONG" and curr >= tp3) or (side == "SHORT" and curr <= tp3):
-                    status, finished = "🎯 TP HIT", True
+                    status, is_finished = "🎯 TP3 HIT", True
+                elif (side == "LONG" and curr >= tp2) or (side == "SHORT" and curr <= tp2):
+                    if not sig.get('tp2_n'):
+                        bot.send_message(CHAT_ID, f"✅ **T2 CORRIDOR BREACHED**\nAsset: #{symbol}\nROI: {roi:+.1f}%"); sig['tp2_n'] = True
+                elif (side == "LONG" and curr >= tp1) or (side == "SHORT" and curr <= tp1):
+                    if not sig.get('tp1_n'):
+                        bot.send_message(CHAT_ID, f"✅ **T1 CORRIDOR BREACHED**\nAsset: #{symbol}\nROI: {roi:+.1f}%"); sig['tp1_n'] = True
 
-                if finished:
-                    bot.send_message(CHAT_ID, f"{status}\n#{symbol}\nROI: {roi:+.1f}%")
-
-                    TRADE_HISTORY.append({
-                        "symbol": symbol,
-                        "roi": roi,
-                        "status": status,
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    })
-
-                    # --- AI LEARNING UPDATE ---
-                    AI_MEMORY["total_trades"] += 1
-                    AI_MEMORY["total_roi"] += roi
-
-                    if roi > 0:
-                        AI_MEMORY["wins"] += 1
-                    else:
-                        AI_MEMORY["losses"] += 1
-
-                    if AI_MEMORY["total_trades"] > 5:
-                        wr = (AI_MEMORY["wins"] / AI_MEMORY["total_trades"]) * 100
-                        if wr > 60:
-                            AI_MEMORY["last_bias"] = "AGGRESSIVE"
-                        elif wr < 45:
-                            AI_MEMORY["last_bias"] = "DEFENSIVE"
-                        else:
-                            AI_MEMORY["last_bias"] = "BALANCED"
-
+                if is_finished:
+                    bot.send_message(CHAT_ID, f"{status}\n#{symbol}\nROI: {roi:+.1f}%\nExit: {format_price(curr)}")
+                    TRADE_HISTORY.append({"symbol": symbol, "roi": roi, "status": status, "timestamp": datetime.now(timezone.utc).isoformat()})
+                    COOLDOWN_COINS[symbol] = datetime.now(timezone.utc) + timedelta(hours=4)
                     ACTIVE_SIGNALS.remove(sig)
-
             time.sleep(60)
         except:
             time.sleep(60)
 
-# --- SCANNER ---
+def daily_report_scheduler():
+    global TRADE_HISTORY
+    while True:
+        now = datetime.now(timezone.utc)
+        if now.hour == 0 and now.minute == 0:
+            yesterday = now - timedelta(days=1)
+            trades = [t for t in TRADE_HISTORY if datetime.fromisoformat(t['timestamp']) > yesterday]
+            if trades:
+                total_roi = sum([t['roi'] for t in trades])
+                wr = (len([t for t in trades if t['roi'] > 0]) / len(trades)) * 100
+                bot.send_message(CHAT_ID, f"📊 **NEXUS DAILY QUANT REPORT**\n━━━━━━━━━━━━━━\n✅ Vectors: {len(trades)}\n🏆 Accuracy: {wr:.1f}%\n💰 Total ROI: {total_roi:+.2f}%")
+            time.sleep(70)
+        time.sleep(30)
+
 def run_scanner():
+    global COOLDOWN_COINS
     res = call_binance_api("/api/v3/ticker/24hr")
     if not res: return
-
-    coins = [c for c in res if c['symbol'].endswith("USDT")]
-    for c in coins[:10]:
-        sig = get_ai_analysis(c)
+    now = datetime.now(timezone.utc)
+    COOLDOWN_COINS = {k: v for k, v in COOLDOWN_COINS.items() if v > now}
+    valid = [c for c in res if c['symbol'].endswith("USDT") and c['symbol'] not in STABLE_COINS and float(c['quoteVolume']) > 10000000]
+    targets = sorted(valid, key=lambda x: float(x['priceChangePercent']), reverse=True)[:4] + sorted(valid, key=lambda x: float(x['priceChangePercent']))[:4] + sorted(valid, key=lambda x: float(x['quoteVolume']), reverse=True)[:2]
+    for t in {v['symbol']: v for v in targets}.values():
+        if any(s.get('symbol') == t['symbol'] for s in ACTIVE_SIGNALS) or t['symbol'] in COOLDOWN_COINS: continue
+        sig = get_ai_analysis(t)
         if sig and sig != "SKIP":
             send_signal_ui(sig, CHAT_ID)
-            time.sleep(10)
+            time.sleep(15)
 
-# --- START ---
+@bot.message_handler(commands=['cek'])
+@bot.message_handler(func=lambda m: m.text.lower().startswith('cek'))
+def manual_check(message):
+    if not is_authorized(message.from_user.id): return denied_access(message)
+    try:
+        parts = message.text.split()
+        if len(parts) < 2: return
+        coin = "".join(re.findall(r'[A-Z0-9]', parts[1].upper()))
+        symbol = f"{coin}USDT"
+        sent_msg = bot.send_message(message.chat.id, f"🔍 `QUANTUM_SCANNING:` **{symbol}**...")
+        res = call_binance_api(f"/api/v3/ticker/24hr?symbol={symbol}")
+        if res:
+            sig = get_ai_analysis(res)
+            bot.delete_message(message.chat.id, sent_msg.message_id)
+            if sig == "SKIP" or not sig:
+                bot.send_message(message.chat.id, f"⚠️ `INSUFFICIENT_DATA:` {symbol}")
+            elif sig:
+                send_signal_ui(sig, message.chat.id)
+        else:
+            bot.send_message(message.chat.id, f"❌ `IDENTIFIER_NOT_FOUND:` {symbol}")
+    except:
+        pass
+
+@bot.message_handler(commands=['start'])
+def start_cmd(message):
+    if not is_authorized(message.from_user.id): return denied_access(message)
+    markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    markup.add(KeyboardButton("🛰️ INITIATE SCAN"), KeyboardButton("🖥️ CORE STATUS"))
+    bot.send_message(message.chat.id, "⚡ **NEXUS QUANTUM CORE ONLINE**", reply_markup=markup)
+
+@bot.message_handler(func=lambda m: m.text == "🛰️ INITIATE SCAN")
+def manual_scan(message):
+    if not is_authorized(message.from_user.id): return denied_access(message)
+    bot.reply_to(message, "🔄 `INITIATING_ASYNC_SCANNER...`")
+    threading.Thread(target=run_scanner).start()
+
+@bot.message_handler(func=lambda m: m.text == "🖥️ CORE STATUS")
+def status_btn(message):
+    if not is_authorized(message.from_user.id): return denied_access(message)
+    bot.send_message(message.chat.id, f"🟢 **SYSTEM DIAGNOSTICS: OPTIMAL**\n🎯 Signals Monitored: {len(ACTIVE_SIGNALS)}")
+
 if __name__ == "__main__":
     threading.Thread(target=monitor_active_signals, daemon=True).start()
+    threading.Thread(target=daily_report_scheduler, daemon=True).start()
 
-    def loop():
+    def scheduler():
         while True:
             run_scanner()
             time.sleep(1800)
 
-    threading.Thread(target=loop, daemon=True).start()
+    threading.Thread(target=scheduler, daemon=True).start()
     bot.infinity_polling(skip_pending=True)
