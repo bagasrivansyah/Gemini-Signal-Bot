@@ -6,6 +6,7 @@ import time
 import threading
 import re
 from datetime import datetime, timezone, timedelta
+from flask import Flask, render_template_string # Tambahan untuk Aplikasi
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from groq import Groq 
 
@@ -13,12 +14,13 @@ from groq import Groq
 TOKEN_TELEGRAM = os.getenv("TOKEN_TELEGRAM")
 CHAT_ID = os.getenv("CHAT_ID") or os.getenv("ID_CHAT_TELEGRAM")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+PORT = int(os.getenv("PORT", 8080)) # Port untuk Railway/Aplikasi
 
 # --- KEAMANAN: WHITELIST SYSTEM (OS VAR) ---
 RAW_WHITELIST = os.getenv("WHITELIST_IDS", "")
 WHITELIST_IDS = [int(i.strip()) for i in RAW_WHITELIST.split(",") if i.strip().isdigit()]
+# ------------------------------------------
 
-# --- STORAGE DI RAM ---
 ACTIVE_SIGNALS = []
 TRADE_HISTORY = [] 
 COOLDOWN_COINS = {} 
@@ -29,7 +31,47 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 
 bot = telebot.TeleBot(TOKEN_TELEGRAM, threaded=True, num_threads=15)
 client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+app = Flask(__name__) # Inisialisasi Jalur Aplikasi
 
+# --- DASHBOARD HTML (Tampilan di dalam APK) ---
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>NEXUS QUANTUM</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { background: #050505; color: #00ff88; font-family: monospace; padding: 20px; }
+        .header { border: 1px solid #00ff88; padding: 10px; text-align: center; font-weight: bold; margin-bottom: 20px; }
+        .card { border: 1px solid #333; background: #0a0a0a; padding: 15px; margin-bottom: 10px; border-radius: 5px; }
+        .symbol { font-size: 18px; color: #fff; }
+        .side-long { color: #00ff88; } .side-short { color: #ff4444; }
+    </style>
+    <script> setInterval(() => { location.reload(); }, 30000); </script>
+</head>
+<body>
+    <div class="header">◢◤ NEXUS QUANTUM CORE ◥◣</div>
+    {% if signals %}
+        {% for s in signals %}
+        <div class="card">
+            <div class="symbol">#{{ s.symbol }} <span class="{{ 'side-long' if s.signal == 'LONG' else 'side-short' }}">{{ s.signal }}</span></div>
+            <div style="margin: 10px 0; font-size: 20px;">ENTRY: {{ s.entry }}</div>
+            <div style="font-size: 12px; color: #888;">T1: {{ s.tp1 }} | T2: {{ s.tp2 }} | T3: {{ s.tp3 }}</div>
+            <div style="font-size: 12px; color: #ff4444;">SL: {{ s.sl }}</div>
+        </div>
+        {% endfor %}
+    {% else %}
+        <p style="text-align:center; color:#444;">NO ACTIVE VECTORS</p>
+    {% endif %}
+</body>
+</html>
+"""
+
+@app.route('/')
+def dashboard():
+    return render_template_string(HTML_TEMPLATE, signals=ACTIVE_SIGNALS)
+
+# --- FUNGSI PROTEKSI ---
 def is_authorized(uid):
     if not WHITELIST_IDS: return True
     return uid in WHITELIST_IDS
@@ -86,25 +128,23 @@ def get_multi_tf_technical(symbol):
         }
     except: return None
 
-# --- UPDATE OTAK AI (FIXED SYNTAX) ---
 def get_ai_analysis(coin_data):
     if not client_groq: return None
     symbol, price = coin_data.get('symbol'), float(coin_data.get('lastPrice') or coin_data.get('price', 0))
     tf_data = get_multi_tf_technical(symbol)
     if tf_data == "INSUFFICIENT" or tf_data is None: return "SKIP"
 
-    # --- HITUNG METRIK LEARNING (DILUAR PROMPT) ---
     learning_log = ""
-    win_rate = 0
     if TRADE_HISTORY:
         recent = TRADE_HISTORY[-5:]
         learning_log = "\n[PAST PERFORMANCE CONTEXT]:\n" + "\n".join([f"- {r['symbol']}: {r['status']} ({r['roi']:+.1f}%)" for r in recent])
         wins = [t for t in TRADE_HISTORY if t['roi'] > 0]
-        win_rate = (len(wins) / len(TRADE_HISTORY)) * 100
+        win_rate = (len(wins) / len(TRADE_HISTORY)) * 100 if TRADE_HISTORY else 0
+        bias = "BULLISH" if win_rate > 55 else "DEFENSIVE"
+    else:
+        win_rate = 0
+        bias = "NEUTRAL"
 
-    bias = "BULLISH" if win_rate > 55 else "DEFENSIVE"
-    
-    # --- PROMPT QUANT LEARNING ---
     prompt = f"""
     Role: Lead Quantitative Researcher at Hedge Fund.
     System Status: Analyze {symbol} at {format_price(price)}.
@@ -112,12 +152,9 @@ def get_ai_analysis(coin_data):
     {learning_log}
 
     [QUANT LEARNING METRICS]
-    - Total Trades: {len(TRADE_HISTORY)}
-    - Win Rate: {win_rate:.1f}%
-    - Recent Bias: {bias}
+    - Win Rate: {win_rate:.1f}% | Bias: {bias}
 
     Task: Berikan Sniper Signal berbasis Machine Learning SMC & Quantitative Model.
-    
     Logic Protocols:
     1. Dynamic Confidence: Hitung skor probabilitas unik (Range 81% - 99%).
     2. Architecture: AMD Logic. Cari area Discount.
@@ -169,8 +206,6 @@ def send_signal_ui(sig_data, target_chat):
         f"⬥ **IDENTIFIER:** `#{symbol}`\n"
         f"⬥ **EXECUTION:** `{side_label}`\n"
         f"⬥ **ALGORITHM:** `Neural-SMC v4.0 | AI-Quant Engine`\n"
-        f"⬥ **AI MODEL:** `LLaMA 3.3 Quant`\n"
-        f"⬥ **MARKET BIAS:** `{side}`\n"
         f"⬥ **STRENGTH:** `[{meter}] {prob}%` \n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"┌─── **ENTRY CORRIDOR** ───┐\n"
@@ -183,7 +218,7 @@ def send_signal_ui(sig_data, target_chat):
         f"⬥ **RISK MITIGATION (SL)**\n"
         f"  └─ `{format_price(sl)}` (Isolated 20x)\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🧠 **AI QUANT ANALYSIS:**\n"
+        f"📝 **NEURAL REASONING:**\n"
         f"_{sig_data.get('reason', 'No data from model')}_\n\n"
         f"🔗 [ACCESS REAL-TIME DATA HUB]({tv_link})\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -296,6 +331,10 @@ def status_btn(message):
     bot.send_message(message.chat.id, f"🟢 **SYSTEM DIAGNOSTICS: OPTIMAL**\n🎯 Signals Monitored: {len(ACTIVE_SIGNALS)}")
 
 if __name__ == "__main__":
+    # JALANKAN WEB SERVER UNTUK APLIKASI
+    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=PORT, use_reloader=False), daemon=True).start()
+    
+    # JALANKAN PROSES BACKROUND
     threading.Thread(target=monitor_active_signals, daemon=True).start()
     threading.Thread(target=daily_report_scheduler, daemon=True).start()
 
