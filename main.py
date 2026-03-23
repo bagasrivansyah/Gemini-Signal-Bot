@@ -33,36 +33,205 @@ bot = telebot.TeleBot(TOKEN_TELEGRAM, threaded=True, num_threads=15)
 client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 app = Flask(__name__) # Inisialisasi Jalur Aplikasi
 
-# --- DASHBOARD HTML (Tampilan di dalam APK) ---
+# --- DASHBOARD HTML (ULTRA-LUXURY APP INTERFACE) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>NEXUS QUANTUM</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { background: #050505; color: #00ff88; font-family: monospace; padding: 20px; }
-        .header { border: 1px solid #00ff88; padding: 10px; text-align: center; font-weight: bold; margin-bottom: 20px; }
-        .card { border: 1px solid #333; background: #0a0a0a; padding: 15px; margin-bottom: 10px; border-radius: 5px; }
-        .symbol { font-size: 18px; color: #fff; }
-        .side-long { color: #00ff88; } .side-short { color: #ff4444; }
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=JetBrains+Mono&display=swap');
+        
+        body { 
+            background-color: #000; 
+            color: #00ff88; 
+            font-family: 'JetBrains Mono', monospace; 
+            margin: 0; padding: 0;
+            overflow-x: hidden;
+            background-image: radial-gradient(circle at 50% 50%, #0a2a1a 0%, #000 100%);
+        }
+
+        /* Scanline Effect */
+        body::before {
+            content: " ";
+            display: block;
+            position: fixed;
+            top: 0; left: 0; bottom: 0; right: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            z-index: 9999;
+            width: 100%; height: 100%;
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+        }
+
+        .app-container { padding: 20px; max-width: 500px; margin: auto; }
+
+        .app-header {
+            text-align: center;
+            padding: 20px 0;
+            border-bottom: 1px solid #00ff88;
+            margin-bottom: 25px;
+        }
+
+        .app-header h1 {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 20px;
+            margin: 0;
+            letter-spacing: 5px;
+            text-shadow: 0 0 10px #00ff88;
+        }
+
+        .status-bar {
+            font-size: 10px;
+            color: #888;
+            margin-top: 5px;
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+        }
+
+        .pulse {
+            width: 8px; height: 8px;
+            background: #00ff88;
+            border-radius: 50%;
+            display: inline-block;
+            animation: pulse-animation 2s infinite;
+        }
+
+        @keyframes pulse-animation {
+            0% { box-shadow: 0 0 0 0px rgba(0, 255, 136, 0.7); }
+            100% { box-shadow: 0 0 0 10px rgba(0, 255, 136, 0); }
+        }
+
+        .signal-card {
+            background: rgba(10, 10, 10, 0.8);
+            border: 1px solid #333;
+            margin-bottom: 20px;
+            position: relative;
+            padding: 15px;
+            overflow: hidden;
+        }
+
+        .signal-card::after {
+            content: "";
+            position: absolute;
+            top: 0; left: 0;
+            width: 4px; height: 100%;
+            background: #00ff88;
+        }
+
+        .signal-card.short::after { background: #ff4444; }
+        .signal-card.short { border-color: rgba(255, 68, 68, 0.3); }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .symbol { font-family: 'Orbitron', sans-serif; font-size: 18px; color: #fff; }
+        .badge {
+            font-size: 10px;
+            padding: 2px 8px;
+            background: #00ff88;
+            color: #000;
+            font-weight: bold;
+        }
+        .badge.short { background: #ff4444; }
+
+        .entry-price {
+            font-size: 24px;
+            text-align: center;
+            color: #00ccff;
+            margin: 10px 0;
+            border: 1px dashed #333;
+            padding: 10px;
+        }
+
+        .target-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .target-box {
+            font-size: 10px;
+            text-align: center;
+            border: 1px solid #222;
+            padding: 5px;
+        }
+
+        .target-box span { display: block; color: #fff; font-size: 12px; margin-top: 3px; }
+
+        .sl-box {
+            margin-top: 15px;
+            padding: 8px;
+            background: rgba(255, 68, 68, 0.1);
+            border: 1px solid #441111;
+            color: #ff4444;
+            text-align: center;
+            font-size: 12px;
+        }
+
+        .prob-bar-container { margin-top: 15px; }
+        .prob-text { font-size: 9px; color: #555; display: flex; justify-content: space-between; }
+        .prob-bg { width: 100%; height: 3px; background: #111; margin-top: 5px; }
+        .prob-fill { height: 100%; background: #00ff88; box-shadow: 0 0 5px #00ff88; }
+
+        .no-signal {
+            text-align: center;
+            margin-top: 100px;
+            color: #333;
+            font-size: 14px;
+        }
     </style>
-    <script> setInterval(() => { location.reload(); }, 30000); </script>
+    <script> setInterval(() => { location.reload(); }, 20000); </script>
 </head>
 <body>
-    <div class="header">◢◤ NEXUS QUANTUM CORE ◥◣</div>
-    {% if signals %}
-        {% for s in signals %}
-        <div class="card">
-            <div class="symbol">#{{ s.symbol }} <span class="{{ 'side-long' if s.signal == 'LONG' else 'side-short' }}">{{ s.signal }}</span></div>
-            <div style="margin: 10px 0; font-size: 20px;">ENTRY: {{ s.entry }}</div>
-            <div style="font-size: 12px; color: #888;">T1: {{ s.tp1 }} | T2: {{ s.tp2 }} | T3: {{ s.tp3 }}</div>
-            <div style="font-size: 12px; color: #ff4444;">SL: {{ s.sl }}</div>
+    <div class="app-container">
+        <div class="app-header">
+            <h1>NEXUS QUANTUM</h1>
+            <div class="status-bar">
+                <span><div class="pulse"></div> LIVE_CORE</span>
+                <span>ISO_LEVERAGE: 20X</span>
+                <span>v5.0.2</span>
+            </div>
         </div>
-        {% endfor %}
-    {% else %}
-        <p style="text-align:center; color:#444;">NO ACTIVE VECTORS</p>
-    {% endif %}
+
+        {% if signals %}
+            {% for s in signals %}
+            <div class="signal-card {{ 'short' if s.signal == 'SHORT' else '' }}">
+                <div class="card-header">
+                    <div class="symbol">#{{ s.symbol }}</div>
+                    <div class="badge {{ 'short' if s.signal == 'SHORT' else '' }}">{{ s.signal }} VECTOR</div>
+                </div>
+                <div class="entry-price">{{ s.entry }}</div>
+                <div class="target-grid">
+                    <div class="target-box">TARGET 1<span>{{ s.tp1 }}</span></div>
+                    <div class="target-box">TARGET 2<span>{{ s.tp2 }}</span></div>
+                    <div class="target-box">TARGET 3<span>{{ s.tp3 }}</span></div>
+                </div>
+                <div class="sl-box">STOP LOSS: {{ s.sl }}</div>
+                <div class="prob-bar-container">
+                    <div class="prob-text">
+                        <span>NEURAL_CONFIDENCE</span>
+                        <span>{{ s.probability }}%</span>
+                    </div>
+                    <div class="prob-bg"><div class="prob-fill" style="width: {{ s.probability }}%"></div></div>
+                </div>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div class="no-signal">
+                [ SEARCHING FOR DEEP LIQUIDITY ]<br>
+                <span style="font-size: 10px; color: #111;">SCANNING_ALL_PAIRS_BINANCE_FUTURES</span>
+            </div>
+        {% endif %}
+    </div>
 </body>
 </html>
 """
