@@ -1,6 +1,7 @@
 pyTelegramBotAPI
 requests
+groq
+flask
 pandas<3.0.0
 pandas-ta
-groq
 python-dotenv
