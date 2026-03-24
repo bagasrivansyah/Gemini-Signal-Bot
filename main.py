@@ -33,7 +33,7 @@ bot = telebot.TeleBot(TOKEN_TELEGRAM, threaded=True, num_threads=15)
 client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 app = Flask(__name__) # Inisialisasi Jalur Aplikasi
 
-# --- DASHBOARD HTML (ULTRA-LUXURY APP INTERFACE WITH MODAL & ALERTS) ---
+# --- DASHBOARD HTML (ULTRA-LUXURY WITH LIVE HIT TRACKER & DUAL ALERTS) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -112,7 +112,7 @@ HTML_TEMPLATE = """
             position: relative;
             padding: 15px;
             overflow: hidden;
-            cursor: pointer; /* Indikator bisa diklik */
+            cursor: pointer;
         }
 
         .signal-card::after {
@@ -164,9 +164,20 @@ HTML_TEMPLATE = """
             text-align: center;
             border: 1px solid #222;
             padding: 5px;
+            transition: 0.5s;
+        }
+
+        /* --- STYLES FOR HIT TRACKER --- */
+        .target-hit {
+            border-color: #ffcc00 !important;
+            color: #ffcc00 !important;
+            background: rgba(255, 204, 0, 0.15);
+            box-shadow: inset 0 0 10px #ffcc00;
+            font-weight: bold;
         }
 
         .target-box span { display: block; color: #fff; font-size: 12px; margin-top: 3px; }
+        .target-hit span { color: #ffcc00 !important; }
 
         .sl-box {
             margin-top: 15px;
@@ -190,22 +201,21 @@ HTML_TEMPLATE = """
             font-size: 14px;
         }
 
-        /* --- STYLES FOR NEW FEATURES --- */
-        #alert-init-btn { width: 100%; padding: 10px; background: #00ff88; color: #000; border: none; font-family: 'Orbitron'; font-weight: bold; cursor: pointer; margin-bottom: 20px; }
+        /* --- STYLES FOR MODAL & ALERTS --- */
+        #alert-init-btn { width: 100%; padding: 12px; background: #00ff88; color: #00; border: none; font-family: 'Orbitron'; font-weight: bold; cursor: pointer; margin-bottom: 20px; box-shadow: 0 0 15px #00ff88; }
         
         #modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.98); z-index: 10000; overflow-y: auto; }
         .modal-body { padding: 20px; max-width: 500px; margin: auto; }
-        .close-modal { color: #ff4444; text-align: right; margin-bottom: 15px; cursor: pointer; font-size: 14px; }
-        #chart-div { width: 100%; height: 300px; border: 1px solid #333; margin-bottom: 20px; }
-        .reason-title { color: #00ff88; font-size: 14px; margin-bottom: 10px; border-bottom: 1px solid #222; padding-bottom: 5px; }
+        .close-modal { color: #ff4444; text-align: right; margin-bottom: 15px; cursor: pointer; font-size: 14px; font-family: 'Orbitron'; }
+        #chart-div { width: 100%; height: 320px; border: 1px solid #333; margin-bottom: 20px; }
+        .reason-title { color: #00ff88; font-size: 14px; margin-bottom: 10px; border-bottom: 1px solid #222; padding-bottom: 5px; font-family: 'Orbitron'; }
         .reason-content { color: #ccc; font-size: 13px; line-height: 1.6; }
     </style>
     <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 </head>
 <body>
     <div class="app-container">
-        <!-- Button to unlock Sound on Mobile -->
-        <button id="alert-init-btn" onclick="initSystem()">[ ACTIVATE NEURAL ALERTS ]</button>
+        <button id="alert-init-btn" onclick="initSystem()">[ INITIALIZE NEURAL INTERFACE ]</button>
 
         <div class="app-header">
             <h1>NEXUS QUANTUM</h1>
@@ -218,7 +228,6 @@ HTML_TEMPLATE = """
 
         {% if signals %}
             {% for s in signals %}
-            <!-- Card Clickable to open Modal -->
             <div class="signal-card {{ 'short' if s.signal == 'SHORT' else '' }}" 
                  onclick="openModal('{{ s.symbol }}', '{{ s.reason }}')">
                 <div class="card-header">
@@ -227,9 +236,9 @@ HTML_TEMPLATE = """
                 </div>
                 <div class="entry-price">{{ s.entry }}</div>
                 <div class="target-grid">
-                    <div class="target-box">TARGET 1<span>{{ s.tp1 }}</span></div>
-                    <div class="target-box">TARGET 2<span>{{ s.tp2 }}</span></div>
-                    <div class="target-box">TARGET 3<span>{{ s.tp3 }}</span></div>
+                    <div class="target-box {{ 'target-hit' if s.tp1_n else '' }}">TARGET 1<span>{{ s.tp1 }}</span></div>
+                    <div class="target-box {{ 'target-hit' if s.tp2_n else '' }}">TARGET 2<span>{{ s.tp2 }}</span></div>
+                    <div class="target-box {{ 'target-hit' if s.tp3_n else '' }}">TARGET 3<span>{{ s.tp3 }}</span></div>
                 </div>
                 <div class="sl-box">STOP LOSS: {{ s.sl }}</div>
                 <div class="prob-bar-container">
@@ -249,7 +258,6 @@ HTML_TEMPLATE = """
         {% endif %}
     </div>
 
-    <!-- MODAL FOR CHART & REASON -->
     <div id="modal">
         <div class="modal-body">
             <div class="close-modal" onclick="closeModal()">[ CLOSE_TERMINAL X ]</div>
@@ -259,37 +267,57 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- AUDIO FOR NOTIF -->
-    <audio id="beep" src="https://assets.mixkit.co/active_storage/sfx/2568/2568-preview.mp3"></audio>
+    <!-- DUAL AUDIO ALERTS -->
+    <audio id="newSigBeep" src="https://assets.mixkit.co/active_storage/sfx/2568/2568-preview.mp3"></audio>
+    <audio id="hitChime" src="https://assets.mixkit.co/active_storage/sfx/1435/1435-preview.mp3"></audio>
 
     <script>
-        const signals = [{% for s in signals %}"{{ s.symbol }}",{% endfor %}];
-        
+        // Data monitoring untuk perbandingan JS
+        const currentData = [
+            {% for s in signals %}
+            { symbol: "{{ s.symbol }}", tp1: {{ 'true' if s.tp1_n else 'false' }}, tp2: {{ 'true' if s.tp2_n else 'false' }} },
+            {% endfor %}
+        ];
+
         function initSystem() {
             Notification.requestPermission();
-            const audio = document.getElementById('beep');
-            audio.play().then(() => audio.pause());
+            // Unlock audio on mobile devices
+            document.getElementById('newSigBeep').play().then(() => document.getElementById('newSigBeep').pause());
+            document.getElementById('hitChime').play().then(() => document.getElementById('hitChime').pause());
             document.getElementById('alert-init-btn').style.display = 'none';
         }
 
-        function checkNewSignals() {
-            let lastSignals = JSON.parse(localStorage.getItem('prev_signals') || "[]");
-            let hasNew = signals.some(s => !lastSignals.includes(s));
-            
-            if (hasNew && lastSignals.length > 0) {
-                document.getElementById('beep').play();
+        function checkPerformance() {
+            let lastCache = JSON.parse(localStorage.getItem('nexus_brain') || "[]");
+            let playHit = false;
+            let playNew = false;
+
+            currentData.forEach(curr => {
+                let old = lastCache.find(o => o.symbol === curr.symbol);
+                if (!old) {
+                    playNew = true; // Koin baru muncul di daftar
+                } else {
+                    if (curr.tp1 && !old.tp1) playHit = true; // Status TP1 berubah jadi HIT
+                    if (curr.tp2 && !old.tp2) playHit = true; // Status TP2 berubah jadi HIT
+                }
+            });
+
+            if (playHit) {
+                document.getElementById('hitChime').play();
+            } else if (playNew && lastCache.length > 0) {
+                document.getElementById('newSigBeep').play();
                 if (Notification.permission === "granted") {
-                    new Notification("NEXUS QUANTUM", { body: "New Institutional Signal Detected!" });
+                    new Notification("NEXUS QUANTUM", { body: "New Institutional Signal Identified!" });
                 }
             }
-            localStorage.setItem('prev_signals', JSON.stringify(signals));
+            localStorage.setItem('nexus_brain', JSON.stringify(currentData));
         }
 
         function openModal(symbol, reason) {
             document.getElementById('modal').style.display = 'block';
             document.getElementById('reason-content').innerText = reason;
             new TradingView.widget({
-                "width": "100%", "height": 300, "symbol": "BINANCE:" + symbol,
+                "width": "100%", "height": 320, "symbol": "BINANCE:" + symbol,
                 "interval": "60", "timezone": "Etc/UTC", "theme": "dark", "style": "1",
                 "locale": "en", "enable_publishing": false, "hide_top_toolbar": true,
                 "container_id": "chart-div"
@@ -301,14 +329,13 @@ HTML_TEMPLATE = """
             document.getElementById('chart-div').innerHTML = "";
         }
 
-        checkNewSignals();
+        checkPerformance();
         
-        // Auto reload every 20s if modal is closed
         setInterval(() => {
             if (document.getElementById('modal').style.display !== 'block') {
                 location.reload();
             }
-        }, 20000);
+        }, 25000);
     </script>
 </body>
 </html>
