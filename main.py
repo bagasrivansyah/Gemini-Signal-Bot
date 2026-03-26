@@ -6,7 +6,7 @@ import time
 import threading
 import re
 from datetime import datetime, timezone, timedelta
-from flask import Flask, render_template_string # Tambahan untuk Aplikasi
+from flask import Flask, render_template_string
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from groq import Groq 
 
@@ -14,24 +14,23 @@ from groq import Groq
 TOKEN_TELEGRAM = os.getenv("TOKEN_TELEGRAM")
 CHAT_ID = os.getenv("CHAT_ID") or os.getenv("ID_CHAT_TELEGRAM")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-PORT = int(os.getenv("PORT", 8080)) # Port untuk Railway/Aplikasi
+PORT = int(os.getenv("PORT", 8080))
 
 # --- KEAMANAN: WHITELIST SYSTEM (OS VAR) ---
 RAW_WHITELIST = os.getenv("WHITELIST_IDS", "")
 WHITELIST_IDS = [int(i.strip()) for i in RAW_WHITELIST.split(",") if i.strip().isdigit()]
-# ------------------------------------------
 
 ACTIVE_SIGNALS = []
 TRADE_HISTORY = [] 
 COOLDOWN_COINS = {} 
 LEVERAGE = 20
 
-STABLE_COINS = ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "DAIUSDT", "AEURUSDT", "EURUSDT", "GBPUSDT", "BUSDUSDT", "USDPUSDT", "USD1USDT", "USDTUSDT"]
+STABLE_COINS = ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "DAIUSDT", "AEURUSDT", "EURUSDT", "GBPUSDT", "BUSDUSDT", "USDPUSDT", "USD1USDT", "USDTUSDT", "UUSDT", "RLUSDUSDT"]
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 bot = telebot.TeleBot(TOKEN_TELEGRAM, threaded=True, num_threads=15)
 client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-app = Flask(__name__) # Inisialisasi Jalur Aplikasi
+app = Flask(__name__)
 
 # --- DASHBOARD HTML (ULTRA-LUXURY WITH LIVE HIT TRACKER & DUAL ALERTS) ---
 HTML_TEMPLATE = """
@@ -345,6 +344,42 @@ HTML_TEMPLATE = """
 def dashboard():
     return render_template_string(HTML_TEMPLATE, signals=ACTIVE_SIGNALS)
 
+# --- SCANNER TRADINGVIEW ---
+def get_tradingview_data(symbol):
+    try:
+        url = "https://scanner.tradingview.com/crypto/scan"
+        payload = {
+            "symbols": {
+                "tickers": [f"BINANCE:{symbol}"],
+                "query": {"types": []}
+            },
+            "columns": [
+                "close","RSI","ADX",
+                "EMA50","EMA200",
+                "Stoch.K","Stoch.D",
+                "AO","Mom","ROC"
+            ]
+        }
+        res = requests.post(url, json=payload, timeout=10)
+        data = res.json()
+        if not data.get("data"):
+            return None
+        d = data["data"][0]["d"]
+        return {
+            "price": d[0],
+            "rsi": d[1],
+            "adx": d[2],
+            "ema50": d[3],
+            "ema200": d[4],
+            "stoch_k": d[5],
+            "stoch_d": d[6],
+            "ao": d[7],
+            "mom": d[8],
+            "roc": d[9]
+        }
+    except:
+        return None
+
 # --- FUNGSI PROTEKSI ---
 def is_authorized(uid):
     if not WHITELIST_IDS: return True
@@ -387,6 +422,9 @@ def call_binance_api(endpoint):
 
 def get_multi_tf_technical(symbol):
     try:
+        tv_data = get_tradingview_data(symbol)
+        if not tv_data:
+            return "SKIP"
         data_4h = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=4h&limit=15")
         data_1h = call_binance_api(f"/api/v3/klines?symbol={symbol}&interval=1h&limit=30")
         if not data_4h or len(data_4h) < 6 or not data_1h or len(data_1h) < 2:
@@ -404,13 +442,21 @@ def get_multi_tf_technical(symbol):
 
 def get_ai_analysis(coin_data):
     if not client_groq: return None
-    symbol, price = coin_data.get('symbol'), float(coin_data.get('lastPrice') or coin_data.get('price', 0))
+    
+    symbol = coin_data.get('symbol')
+    price = float(coin_data.get('lastPrice') or coin_data.get('price', 0))
+
+    tv_data = get_tradingview_data(symbol)
+    if not tv_data:
+        return "SKIP"
+
     tf_data = get_multi_tf_technical(symbol)
-    if tf_data == "INSUFFICIENT" or tf_data is None: return "SKIP"
+    if tf_data == "INSUFFICIENT" or tf_data is None:
+        return "SKIP"
 
     learning_log = ""
     if TRADE_HISTORY:
-        recent = TRADE_HISTORY[-5:]
+        recent = TRADE_HISTORY[-50:]
         learning_log = "\n[PAST PERFORMANCE CONTEXT]:\n" + "\n".join([f"- {r['symbol']}: {r['status']} ({r['roi']:+.1f}%)" for r in recent])
         wins = [t for t in TRADE_HISTORY if t['roi'] > 0]
         win_rate = (len(wins) / len(TRADE_HISTORY)) * 100 if TRADE_HISTORY else 0
@@ -435,6 +481,15 @@ def get_ai_analysis(coin_data):
     3. Exit Strategy: Fibonacci 1.618.
     4. NO Scientific Notation.
     
+[REAL-TIME TECHNICAL DATA - TRADINGVIEW]
+- RSI: {tv_data['rsi']}
+- ADX: {tv_data['adx']}
+- EMA50: {tv_data['ema50']}
+- EMA200: {tv_data['ema200']}
+- Stochastic: K={tv_data['stoch_k']} D={tv_data['stoch_d']}
+- Momentum: {tv_data['mom']}
+- ROC: {tv_data['roc']}
+
     Output JSON ONLY:
     {{
         "symbol": "{symbol}", "signal": "LONG/SHORT/WAIT", "entry": {price},
@@ -470,7 +525,6 @@ def send_signal_ui(sig_data, target_chat):
 
     meter_fill = int(prob // 10)
     meter = "⬥" * meter_fill + "⬦" * (10 - meter_fill)
-
     tv_link = f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}"
 
     msg = (
@@ -502,6 +556,7 @@ def send_signal_ui(sig_data, target_chat):
     if not any(s.get('symbol') == symbol for s in ACTIVE_SIGNALS):
         ACTIVE_SIGNALS.append(sig_data)
 
+# --- MONITOR SIGNALS ---
 def monitor_active_signals():
     global ACTIVE_SIGNALS, TRADE_HISTORY, COOLDOWN_COINS
     while True:
@@ -534,6 +589,7 @@ def monitor_active_signals():
         except:
             time.sleep(60)
 
+# --- DAILY REPORT ---
 def daily_report_scheduler():
     global TRADE_HISTORY
     while True:
@@ -548,6 +604,7 @@ def daily_report_scheduler():
             time.sleep(70)
         time.sleep(30)
 
+# --- RUN SCANNER ---
 def run_scanner():
     global COOLDOWN_COINS
     res = call_binance_api("/api/v3/ticker/24hr")
@@ -563,6 +620,7 @@ def run_scanner():
             send_signal_ui(sig, CHAT_ID)
             time.sleep(15)
 
+# --- TELEGRAM HANDLERS ---
 @bot.message_handler(commands=['cek'])
 @bot.message_handler(func=lambda m: m.text.lower().startswith('cek'))
 def manual_check(message):
@@ -615,7 +673,7 @@ if __name__ == "__main__":
     def scheduler():
         while True:
             run_scanner()
-            time.sleep(1800)
+            time.sleep(3600)
 
     threading.Thread(target=scheduler, daemon=True).start()
     bot.infinity_polling(skip_pending=True)
