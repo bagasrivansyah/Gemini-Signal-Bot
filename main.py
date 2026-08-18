@@ -26,7 +26,7 @@ COOLDOWN_COINS = {}
 LEVERAGE = 20
 
 STABLE_COINS = ["USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "DAIUSDT", "AEURUSDT", "EURUSDT", "GBPUSDT", "BUSDUSDT", "USDPUSDT", "USD1USDT", "USDTUSDT", "UUSDT", "RLUSDUSDT"]
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-120b"
 
 bot = telebot.TeleBot(TOKEN_TELEGRAM, threaded=True, num_threads=15)
 client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
@@ -500,9 +500,13 @@ def get_ai_analysis(coin_data):
     try:
         completion = client_groq.chat.completions.create(
             model=GROQ_MODEL,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": "Anda adalah AI trading kuantitatif spesialis SMC dan ICT. Anda WAJIB merespons HANYA dalam format JSON murni tanpa kalimat basa-basi."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2, # Menurunkan suhu untuk menajamkan perhitungan logika SMC/ICT
             response_format={"type": "json_object"},
-            timeout=25
+            timeout=30 # Sedikit dinaikkan untuk mengakomodasi model 120B
         )
         return json.loads(completion.choices[0].message.content)
     except:
