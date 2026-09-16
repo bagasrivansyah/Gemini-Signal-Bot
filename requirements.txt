@@ -1,7 +1,7 @@
-pyTelegramBotAPI
-requests
-groq
-flask
-pandas<3.0.0
-pandas-ta
-python-dotenv
+pyTelegramBotAPI==4.14.0
+requests==2.31.0
+groq==0.4.2
+flask==3.0.0
+pandas==2.2.0
+pandas-ta==0.3.14b0
+python-dotenv==1.0.0
